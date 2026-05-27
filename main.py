@@ -2,31 +2,71 @@ import numpy as np
 import rasterio
 import os
 import warnings
+import psutil
 from pyproj import Geod
 from skimage import measure
 
+def check_available_ram_mb():
+    """
+    Queries the operating system layer dynamically to determine 
+    exactly how many Megabytes of free RAM are available.
+    Works locally and inside CryoCloud containers.
+    """
+    virtual_memory = psutil.virtual_memory()
+    # virtual_memory.available returns bytes -> convert to Megabytes
+    return virtual_memory.available / (1024 ** 2)
 
-def load_DEM(DEM_path):
-    #Verify file path existence
+def raster_io_check(DEM_path, available_ram_mb):
+    """
+    Pre-flight metadata check. Evaluates files against system constraints
+    and determines whether a windowed pipeline or casting is required.
+    """
     if not os.path.exists(DEM_path):
         raise FileNotFoundError(f"The specified DEM file could not be found at: '{DEM_path}'")
         
+    with rasterio.open(DEM_path) as src:
+        width = src.width
+        height = src.height
+        band_count = src.count
+        raw_dtype_str = src.dtypes[0]
+        
+        needs_casting = raw_dtype_str != 'float32'
+        bytes_per_pixel = np.dtype(raw_dtype_str).itemsize
+        
+        # Memory footprints
+        raw_size_mb = (width * height * bytes_per_pixel) / (1024 ** 2)
+        float32_size_mb = (width * height * 4) / (1024 ** 2)
+        
+        peak_ram_required_mb = (raw_size_mb + float32_size_mb) if needs_casting else float32_size_mb
+        
+        # Safe threshold rule: budget no more than 60% of *currently available* RAM to prevent crashing
+        safe_ram_budget_mb = available_ram_mb * 0.60
+        use_windowed_io = peak_ram_required_mb > safe_ram_budget_mb
+        
+        return {
+            "use_windowed_io": use_windowed_io,
+            "needs_casting": needs_casting,
+            "band_count": band_count,
+            "peak_ram_mb": peak_ram_required_mb
+        }
+
+def load_DEM(DEM_path, needs_casting, band_count):
+    
     try:
         with rasterio.open(DEM_path) as src:
-
-            if src.count > 1:
+            if band_count > 1:
                 warnings.warn(
                     f"Warning: The raster at '{DEM_path}' contains {src.count} bands. "
                     "This tool will proceed using Band 1 for calculations. "
                     "Please ensure your input is a valid DEM with elevation data in Band 1.",
                     UserWarning
                 )
-
-            DEM_array = src.read(1).astype('float32')
-            transform = src.transform
-            crs = src.crs
-            
-            #Check for nodata and handle warnings/masking
+                
+            if needs_casting:
+                DEM_array = src.read(1).astype('float32')
+            else:
+                DEM_array = src.read(1).astype('float32', copy=False)
+                
             nodata = src.nodata
             if nodata is not None:
                 DEM_array = np.where(DEM_array == nodata, np.nan, DEM_array)
@@ -36,12 +76,22 @@ def load_DEM(DEM_path):
                     "Edges or missing data regions may distort GIA calculations.",
                     UserWarning
                 )
-                
-        return DEM_array, transform, crs
+    
+        return DEM_array, src.transform, src.crs
 
-    #Catch general Rasterio open errors (e.g., file is corrupted or not a valid GeoTIFF)
     except rasterio.errors.RasterioIOError as e:
-        raise IOError(f"Failed to read the file at '{DEM_path}'. It may be corrupted or an invalid format. Details: {e}")
+        raise IOError(f"Failed to read the file. Details: {e}")
+
+
+def load_DEM_windowed(DEM_path, needs_casting, band_count):
+    """
+    Placeholder for specialized windowed reading logic.
+    Called when files exceed the system RAM safety margin.
+    """
+    print(f"[Windowed Engine] Processing {DEM_path} sequentially in blocks...")
+    # Windowed loop execution goes here
+    return "WINDOWED_STREAM_SUCCESS"
+
 
 def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_factor):
     geod = Geod(ellps='WGS84')

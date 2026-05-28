@@ -21,35 +21,51 @@ def raster_io_check(DEM_path, available_ram_mb):
     Pre-flight metadata check. Evaluates files against system constraints
     and determines whether a windowed pipeline or casting is required.
     """
+    #Path validation
     if not os.path.exists(DEM_path):
         raise FileNotFoundError(f"The specified DEM file could not be found at: '{DEM_path}'")
         
-    with rasterio.open(DEM_path) as src:
-        width = src.width
-        height = src.height
-        band_count = src.count
-        raw_dtype_str = src.dtypes[0]
-        
-        needs_casting = raw_dtype_str != 'float32'
-        bytes_per_pixel = np.dtype(raw_dtype_str).itemsize
-        
-        # Memory footprints
-        raw_size_mb = (width * height * bytes_per_pixel) / (1024 ** 2)
-        float32_size_mb = (width * height * 4) / (1024 ** 2)
-        
-        peak_ram_required_mb = (raw_size_mb + float32_size_mb) if needs_casting else float32_size_mb
-        
-        # Safe threshold rule: budget no more than 60% of *currently available* RAM to prevent crashing
-        safe_ram_budget_mb = available_ram_mb * 0.60
-        use_windowed_io = peak_ram_required_mb > safe_ram_budget_mb
-        
-        return {
-            "use_windowed_io": use_windowed_io,
-            "needs_casting": needs_casting,
-            "band_count": band_count,
-            "peak_ram_mb": peak_ram_required_mb
-        }
+    #Defensive I/O trapping
+    try:
+        with rasterio.open(DEM_path) as src:
+            # Safely capture structural metadata
+            width = src.width or 0
+            height = src.height or 0
+            band_count = src.count or 0
+            
+            # Fail-safe guard for zero-band or malformed files
+            if band_count == 0 or width == 0 or height == 0:
+                raise ValueError(f"The file at '{DEM_path}' is missing essential raster dimensions or bands.")
+            
+            # Safely grab the data type now that we know at least 1 band exists
+            raw_dtype_str = src.dtypes[0]
+            
+            needs_casting = raw_dtype_str != 'float32'
+            bytes_per_pixel = np.dtype(raw_dtype_str).itemsize
+            
+            # Memory footprints
+            raw_size_mb = (width * height * bytes_per_pixel) / (1024 ** 2)
+            float32_size_mb = (width * height * 4) / (1024 ** 2)
+            
+            peak_ram_required_mb = (raw_size_mb + float32_size_mb) if needs_casting else float32_size_mb
+            
+            # Safe threshold rule
+            safe_ram_budget_mb = available_ram_mb * 0.60
+            use_windowed_io = peak_ram_required_mb > safe_ram_budget_mb
+            
+            return {
+                "use_windowed_io": use_windowed_io,
+                "needs_casting": needs_casting,
+                "band_count": band_count,
+                "peak_ram_mb": peak_ram_required_mb
+            }
 
+    # Catch file corruption, invalid formats, or broken headers
+    except rasterio.errors.RasterioIOError as e:
+        raise IOError(
+            f"Rasterio could not open '{DEM_path}'. The file may be corrupted, "
+            f"truncated, or is an unsupported image format. Details: {e}"
+        )
 def load_DEM(DEM_path, needs_casting, band_count):
     
     try:
@@ -94,30 +110,39 @@ def load_DEM_windowed(DEM_path, needs_casting, band_count):
 
 
 def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_factor):
+    """
+    Applies a directional planar downward tilt across a DEM starting from an origin point.
+    Cells in the direction of the tilt azimuth are adjusted linearly.
+    Cells behind the tilt plane baseline experience zero change.
+    """
     geod = Geod(ellps='WGS84')
     lon_start, lat_start = origin_coords
     
-    # Generate the coordinate grid using the raster's affine transform
+    #Generate the coordinate grid using the raster's affine transform
     rows, cols = np.indices(DEM_array.shape)
     lons, lats = rasterio.transform.xy(transform, rows, cols)
     lons = np.array(lons)
     lats = np.array(lats)
     
-    # Calculate curved-earth distance and direction to every single pixel
+    #Calculate curved-earth distance and direction to every single pixel
     forward_azimuth, _, distance_meters = geod.inv(
         np.full_like(lons, lon_start), np.full_like(lats, lat_start), 
         lons, lats
     )
     
-    # Project the distance along our specific tilt axis
+    #Project the distance along our specific tilt axis using cosine trigonometry
     angle_diff = np.radians(forward_azimuth - tilt_azimuth)
     projected_distance_km = (distance_meters / 1000.0) * np.cos(angle_diff)
+    
+    
+    # This prevents the "south" cells from experiencing any elevation change.
+    projected_distance_km = np.where(projected_distance_km < 0, 0, projected_distance_km)
     
     # Compute elevation adjustments (tilt_factor is in meters per kilometer)
     elevation_delta = projected_distance_km * tilt_factor
     
-    # Return the newly modified "untilted" landscape array
-    return DEM_array + elevation_delta
+    # Return the newly modified landscape array
+    return DEM_array - elevation_delta
 
 def extract_strandline_contours(tilted_DEM, target_elevation):
     # skimage expects a clean array without NaNs for contouring, so we handle that

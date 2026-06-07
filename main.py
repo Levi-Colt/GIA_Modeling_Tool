@@ -25,7 +25,7 @@ def raster_io_check(DEM_path, available_ram_mb):
     if not os.path.exists(DEM_path):
         raise FileNotFoundError(f"The specified DEM file could not be found at: '{DEM_path}'")
         
-    #Defensive I/O trapping
+    #Determine I/O method
     try:
         with rasterio.open(DEM_path) as src:
             # Safely capture structural metadata

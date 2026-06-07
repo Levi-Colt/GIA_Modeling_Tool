@@ -8,8 +8,8 @@ import os
 import warnings
 
 #Simulation of your execution runtime or FastAPI Route handler
-def process_dem_pipeline(file_path):
-    print("--- Starting GIA Processing Pipeline ---")
+def process_dem(file_path):
+    print("--- Starting GIA Processing ---")
     
     #Check system constraints dynamically
     free_ram = check_available_ram_mb()
@@ -23,7 +23,7 @@ def process_dem_pipeline(file_path):
     needs_casting = io_strategy["needs_casting"]
     band_count = io_strategy["band_count"]
     
-    # 3. Route execution branch based on the strategic flag
+    #Route execution branch based on the configuration flag
     if io_strategy["use_windowed_io"]:
         print("ALERT: File memory footprint exceeds safe RAM threshold.")
         result = load_DEM_windowed(file_path, needs_casting, band_count)
@@ -31,7 +31,6 @@ def process_dem_pipeline(file_path):
         print("PASS: File is safe for standard in-memory operations.")
         dem_array, transform, crs = load_DEM(file_path, needs_casting, band_count)
         print(f"Successfully loaded array with shape {dem_array.shape} into system memory.")
-        # proceed with calculate_gia_tilt(dem_array, transform...)
         result = "STANDARD_LOAD_SUCCESS"
         
     return result

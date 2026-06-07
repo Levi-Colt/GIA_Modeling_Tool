@@ -144,6 +144,58 @@ def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_facto
     # Return the newly modified landscape array
     return DEM_array - elevation_delta
 
+def extract_strandline_contours(tilted_DEM, transform, target_elevation):
+    """
+    Extracts continuous strandline paths at a target paleo-elevation.
+    Automatically translates pixel vectors back into geospatial coordinates.
+    """
+    # 1. Prevent contour artifacts by handling NaNs defensively.
+    # Instead of an extreme value like -9999, we interpolate or use a value 
+    # that won't create a false crossing. Better yet, create a boolean mask of the original NaNs.
+    nan_mask = np.isnan(tilted_DEM)
+    
+    # Fill NaNs with an extreme value away from target to ensure a crisp boundary,
+    # but we will explicitly filter out contours that trace this mask boundary.
+    clean_array = np.nan_to_num(tilted_DEM, nan=-99999.0)
+    
+    # 2. Extract raw pixel-space contours
+    pixel_contours = measure.find_contours(clean_array, target_elevation)
+    
+    # Handle the empty edge case gracefully
+    if not pixel_contours:
+        warnings.warn(f"No strandlines found at target elevation: {target_elevation} meters.", UserWarning)
+        return []
+        
+    geo_contours = []
+    
+    # 3. Transform pixel coordinates back to real-world Geographics (Lon/Lat)
+    for contour in pixel_contours:
+        # skimage returns coordinates as (row, col) float arrays
+        rows = contour[:, 0]
+        cols = contour[:, 1]
+        
+        # Verify if this contour is just tracing your artificial NaN boundary cliff
+        # We sample the coordinates to see if they are touching the original missing data mask
+        rounded_rows = np.clip(np.round(rows).astype(int), 0, tilted_DEM.shape[0] - 1)
+        rounded_cols = np.clip(np.round(cols).astype(int), 0, tilted_DEM.shape[1] - 1)
+        
+        if np.any(nan_mask[rounded_rows, rounded_cols]):
+            # Skip this contour line if it's hitting your data boundary edge
+            continue
+
+        #if len(contour) < 10:  # Skip paths that have fewer than 10 vertices
+        #    continue
+            
+        # Use rasterio's fast vector transform to convert pixels to spatial coords
+        lons, lats = rasterio.transform.xy(transform, rows, cols)
+        
+        # Zip them together into a clean NX2 coordinate array (Lon, Lat)
+        geo_coordinates = np.column_stack((lons, lats))
+        geo_contours.append(geo_coordinates)
+        
+    return geo_contours
+
+"""
 def extract_strandline_contours(tilted_DEM, target_elevation):
     # skimage expects a clean array without NaNs for contouring, so we handle that
     clean_array = np.nan_to_num(tilted_DEM, nan=-9999)
@@ -151,7 +203,7 @@ def extract_strandline_contours(tilted_DEM, target_elevation):
     # Find contours at the exact target paleo-lake level
     contours = measure.find_contours(clean_array, target_elevation)
     return contours
-
+"""
 # --- LOCAL TESTING BLOCK ---
 if __name__ == "__main__":
     print("Testing GIA Engine backend components locally...")

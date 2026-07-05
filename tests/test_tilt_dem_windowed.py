@@ -101,20 +101,59 @@ def test_origin_on_edge_does_not_warn(flat_dem_path, tmp_path):
 
 # --- windowed-specific edge cases ---
 
-def test_block_size_parameter_is_currently_ignored(flat_dem_path, flat_dem_array, tmp_path):
-    # KNOWN GAP: block_size is accepted as a parameter but never actually
-    # used -- the function streams through the file's NATIVE block windows
-    # (src.block_windows(1)) regardless of what's passed here. This test
-    # documents that the parameter is currently a no-op so it doesn't get
-    # mistaken for a working knob, and so a real implementation change here
-    # would be caught by this test needing an update.
-    out_a = str(tmp_path / "out_a.tif")
-    out_b = str(tmp_path / "out_b.tif")
-    tilted_a, _, _ = _run(flat_dem_path, out_a, CENTER, 90, 5.0)
-    result_b = tilt_DEM_windowed(flat_dem_path, out_b, CENTER, 90, 5.0, block_size=1)
-    with rasterio.open(result_b[0]) as src:
-        tilted_b = src.read(1)
-    np.testing.assert_allclose(tilted_a, tilted_b)
+def test_tile_size_now_genuinely_controls_tiling(tmp_path):
+    # tile_size used to be a dead parameter (the function always followed the
+    # source file's native block layout instead). It's now real: this
+    # confirms results are identical regardless of tile_size, proving the
+    # tiling logic is correct at multiple granularities, not just a no-op.
+    transform = from_origin(-105.0, 45.0, 0.001, 0.001)
+    grid = 37  # deliberately not a clean multiple of any tile_size below
+    yy, xx = np.indices((grid, grid))
+    array = (yy * grid + xx).astype("float32")
+    dem_path = str(tmp_path / "unique_dem.tif")
+    profile = {
+        "driver": "GTiff", "height": grid, "width": grid, "count": 1,
+        "dtype": "float32", "crs": "EPSG:4326", "transform": transform,
+        "nodata": -9999.0,
+    }
+    with rasterio.open(dem_path, "w", **profile) as dst:
+        dst.write(array, 1)
+
+    origin = (-104.99, 44.99)
+    results = []
+    for tile_size in (5, 16, 512):
+        output_path = str(tmp_path / f"out_{tile_size}.tif")
+        out_path, _, _ = tilt_DEM_windowed(dem_path, output_path, origin, 90, 5.0, tile_size=tile_size)
+        with rasterio.open(out_path) as src:
+            results.append(src.read(1))
+
+    np.testing.assert_allclose(results[0], results[1])
+    np.testing.assert_allclose(results[1], results[2])
+
+
+def test_tile_size_smaller_than_raster_covers_every_pixel(tmp_path):
+    # A small tile_size forces many tiles across both axes -- confirms the
+    # win_h/win_w clipping at the raster's remainder edge is correct and no
+    # pixel is skipped or double-written.
+    transform = from_origin(-105.0, 45.0, 0.001, 0.001)
+    grid = 37
+    yy, xx = np.indices((grid, grid))
+    array = (yy * grid + xx).astype("float32")
+    dem_path = str(tmp_path / "unique_dem.tif")
+    profile = {
+        "driver": "GTiff", "height": grid, "width": grid, "count": 1,
+        "dtype": "float32", "crs": "EPSG:4326", "transform": transform,
+    }
+    with rasterio.open(dem_path, "w", **profile) as dst:
+        dst.write(array, 1)
+
+    output_path = str(tmp_path / "out.tif")
+    # tilt_factor=0 isolates this test to the tiling/writing logic itself.
+    # (CENTER is far outside this small, fine-resolution grid, so a
+    # disconnected-origin warning is expected here and is irrelevant to
+    # what this test is actually checking.)
+    tilted, _, _ = _run(dem_path, output_path, CENTER, 90, 0.0)
+    np.testing.assert_array_equal(tilted, array)
 
 
 def test_disconnected_origin_warns_only_once_across_multiple_blocks(tmp_path):

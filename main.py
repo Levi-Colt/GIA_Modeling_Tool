@@ -186,8 +186,20 @@ def extract_strandline_contours_windowed(tilted_DEM_path, target_elevation, tile
                 if nodata is not None:
                     block = np.where(block == nodata, np.nan, block)
                 window_transform = src.window_transform(padded_window)
-                # Reuses the existing full-array contour function unchanged
-                tile_contours = extract_strandline_contours(block, window_transform, target_elevation)
+                # Reuses the existing full-array contour function unchanged.
+                # extract_strandline_contours validates target_elevation against
+                # the LOCAL min/max of whatever array it's given -- which here is
+                # just this one tile, not the whole raster. A target elevation
+                # that's perfectly valid for the raster overall will routinely
+                # fall outside a given tile's local range (most DEMs vary in
+                # elevation across their extent), and an all-NaN tile is equally
+                # unremarkable at this per-tile granularity. Both simply mean
+                # "no contour in this tile," not an invalid request -- so these
+                # specific ValueErrors are swallowed here rather than propagated.
+                try:
+                    tile_contours = extract_strandline_contours(block, window_transform, target_elevation)
+                except ValueError:
+                    continue
                 # Core tile's real-world bounding box (unpadded)
                 core_transform = src.window_transform(Window(col_off, row_off, core_w, core_h))
                 minx, maxy = core_transform * (0, 0)

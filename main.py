@@ -128,11 +128,19 @@ def _warn_if_origin_disconnected(transform, shape, origin_coords):
         )
 
 
-def tilt_DEM_windowed(DEM_path, output_path, origin_coords, tilt_azimuth, tilt_factor, block_size=512):
+def tilt_DEM_windowed(DEM_path, output_path, origin_coords, tilt_azimuth, tilt_factor, tile_size=512):
     """
-    Streams the DEM through its native block windows, applying the directional
-    tilt to each block independently and writing the result straight to disk.
-    Used when raster_io_check flags a file as exceeding the safe RAM budget.
+    Streams the DEM through uniform tile_size x tile_size windows, applying
+    the directional tilt to each tile independently and writing the result
+    straight to disk. Used when raster_io_check flags a file as exceeding
+    the safe RAM budget.
+
+    tile_size controls peak memory usage directly (one tile_size x tile_size
+    float32 block in memory at a time), independent of the source file's own
+    internal block/tile layout -- this was previously delegated to the
+    source's native blocking via src.block_windows(1), which gave no actual
+    control over memory footprint if the source happened to have large or
+    unusual internal blocks.
 
     Returns (output_path, transform, crs) to mirror the (array, transform, crs)
     contract load_DEM/calculate_tilt use for the standard, in-memory pipeline —
@@ -145,18 +153,23 @@ def tilt_DEM_windowed(DEM_path, output_path, origin_coords, tilt_azimuth, tilt_f
         profile.update(dtype='float32')
         out_transform = src.transform
         out_crs = src.crs
+        width, height = src.width, src.height
         with rasterio.open(output_path, 'w', **profile) as dst:
-            for ji, window in src.block_windows(1):
-                block = src.read(1, window=window).astype('float32')
-                nodata = src.nodata
-                if nodata is not None:
-                    block = np.where(block == nodata, np.nan, block)
-                window_transform = src.window_transform(window)
-                tilted_block = calculate_tilt(
-                    block, window_transform, origin_coords, tilt_azimuth, tilt_factor,
-                    warn_if_disconnected=False,
-                )
-                dst.write(tilted_block, 1, window=window)
+            for row_off in range(0, height, tile_size):
+                for col_off in range(0, width, tile_size):
+                    win_h = min(tile_size, height - row_off)
+                    win_w = min(tile_size, width - col_off)
+                    window = Window(col_off, row_off, win_w, win_h)
+                    block = src.read(1, window=window).astype('float32')
+                    nodata = src.nodata
+                    if nodata is not None:
+                        block = np.where(block == nodata, np.nan, block)
+                    window_transform = src.window_transform(window)
+                    tilted_block = calculate_tilt(
+                        block, window_transform, origin_coords, tilt_azimuth, tilt_factor,
+                        warn_if_disconnected=False,
+                    )
+                    dst.write(tilted_block, 1, window=window)
     return output_path, out_transform, out_crs
 
 

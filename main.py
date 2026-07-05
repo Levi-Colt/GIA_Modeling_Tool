@@ -80,8 +80,16 @@ def load_DEM(DEM_path, needs_casting, band_count):
                     "Please ensure your input is a valid DEM with elevation data in Band 1.",
                     UserWarning
                 )
-                
+
+            raw_dtype_str = src.dtypes[0]
+
             if needs_casting:
+                if np.dtype(raw_dtype_str).itemsize > np.dtype('float32').itemsize:
+                    warnings.warn(
+                        f"Warning: The raster at '{DEM_path}' has dtype '{raw_dtype_str}', which has "
+                        "greater precision than float32. Casting to float32 may truncate elevation values.",
+                        UserWarning
+                    )
                 DEM_array = src.read(1).astype('float32')
             else:
                 DEM_array = src.read(1).astype('float32', copy=False)
@@ -102,15 +110,41 @@ def load_DEM(DEM_path, needs_casting, band_count):
         raise IOError(f"Failed to read the file. Details: {e}")
 
 
+def _warn_if_origin_disconnected(transform, shape, origin_coords):
+    """
+    Checks whether the tilt origin falls within the raster's geographic extent.
+    If it doesn't, the resulting strandline will still be computed, but it will
+    be geometrically disconnected from the point the user specified as its origin.
+    """
+    height, width = shape
+    left, bottom, right, top = rasterio.transform.array_bounds(height, width, transform)
+    lon, lat = origin_coords
+    if not (left <= lon <= right and bottom <= lat <= top):
+        warnings.warn(
+            f"The tilt origin {origin_coords} lies outside the raster's extent "
+            f"(lon range [{left:.6f}, {right:.6f}], lat range [{bottom:.6f}, {top:.6f}]). "
+            "The resulting strandline contour will be disconnected from the specified origin point.",
+            UserWarning
+        )
+
+
 def tilt_DEM_windowed(DEM_path, output_path, origin_coords, tilt_azimuth, tilt_factor, block_size=512):
     """
     Streams the DEM through its native block windows, applying the directional
     tilt to each block independently and writing the result straight to disk.
     Used when raster_io_check flags a file as exceeding the safe RAM budget.
+
+    Returns (output_path, transform, crs) to mirror the (array, transform, crs)
+    contract load_DEM/calculate_tilt use for the standard, in-memory pipeline —
+    the "data" component is a path on disk here instead of an array, since
+    avoiding a full in-memory array is the whole point of windowing.
     """
     with rasterio.open(DEM_path) as src:
+        _warn_if_origin_disconnected(src.transform, (src.height, src.width), origin_coords)
         profile = src.profile.copy()
         profile.update(dtype='float32')
+        out_transform = src.transform
+        out_crs = src.crs
         with rasterio.open(output_path, 'w', **profile) as dst:
             for ji, window in src.block_windows(1):
                 block = src.read(1, window=window).astype('float32')
@@ -118,9 +152,12 @@ def tilt_DEM_windowed(DEM_path, output_path, origin_coords, tilt_azimuth, tilt_f
                 if nodata is not None:
                     block = np.where(block == nodata, np.nan, block)
                 window_transform = src.window_transform(window)
-                tilted_block = calculate_tilt(block, window_transform, origin_coords, tilt_azimuth, tilt_factor)
+                tilted_block = calculate_tilt(
+                    block, window_transform, origin_coords, tilt_azimuth, tilt_factor,
+                    warn_if_disconnected=False,
+                )
                 dst.write(tilted_block, 1, window=window)
-    return output_path
+    return output_path, out_transform, out_crs
 
 
 def extract_strandline_contours_windowed(tilted_DEM_path, target_elevation, tile_size=1024, halo=32):
@@ -190,20 +227,30 @@ def write_dem_to_gpkg(dem_array, transform, crs, gpkg_path, table_name="modified
         dst.write(dem_array, 1)
 
 
-def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_factor):
+def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_factor, warn_if_disconnected=True):
     """
     Applies a directional planar downward tilt across a DEM starting from an origin point.
     Cells in the direction of the tilt azimuth are adjusted linearly.
     Cells behind the tilt plane baseline experience zero change.
+
+    warn_if_disconnected: set to False when calling this per-block from a windowed
+    pipeline, since a block's local extent will rarely contain the origin even when
+    the full raster does; the windowed caller performs this check once, upfront,
+    against the full raster extent instead.
     """
+    if warn_if_disconnected:
+        _warn_if_origin_disconnected(transform, DEM_array.shape, origin_coords)
+
     geod = Geod(ellps='WGS84')
     lon_start, lat_start = origin_coords
     
     #Generate the coordinate grid using the raster's affine transform
     rows, cols = np.indices(DEM_array.shape)
     lons, lats = rasterio.transform.xy(transform, rows, cols)
-    lons = np.array(lons)
-    lats = np.array(lats)
+    # rasterio.transform.xy flattens 2D row/col inputs into 1D output arrays,
+    # so reshape back to the DEM's original grid before doing elementwise math.
+    lons = np.array(lons).reshape(DEM_array.shape)
+    lats = np.array(lats).reshape(DEM_array.shape)
     
     #Calculate curved-earth distance and direction to every single pixel
     forward_azimuth, _, distance_meters = geod.inv(
@@ -234,7 +281,19 @@ def extract_strandline_contours(tilted_DEM, transform, target_elevation):
     # Instead of an extreme value like -9999, we interpolate or use a value 
     # that won't create a false crossing. Better yet, create a boolean mask of the original NaNs.
     nan_mask = np.isnan(tilted_DEM)
-    
+
+    valid_values = tilted_DEM[~nan_mask]
+    if valid_values.size == 0:
+        raise ValueError("The DEM contains no valid (non-NaN) elevation data to contour.")
+
+    valid_min = np.nanmin(valid_values)
+    valid_max = np.nanmax(valid_values)
+    if target_elevation < valid_min or target_elevation > valid_max:
+        raise ValueError(
+            f"Target elevation {target_elevation} is outside the DEM's valid elevation "
+            f"range [{valid_min}, {valid_max}]."
+        )
+
     # Fill NaNs with an extreme value away from target to ensure a crisp boundary,
     # but we will explicitly filter out contours that trace this mask boundary.
     clean_array = np.nan_to_num(tilted_DEM, nan=-99999.0)

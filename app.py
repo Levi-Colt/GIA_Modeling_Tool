@@ -39,12 +39,13 @@ def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
         print("ALERT: File memory footprint exceeds safe RAM threshold. Using windowed pipeline.")
         with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tmp:
             tilted_path = tmp.name
-        tilt_DEM_windowed(file_path, tilted_path, origin_coords, tilt_azimuth, tilt_factor)
+        tilted_path, tilted_transform, crs = tilt_DEM_windowed(
+            file_path, tilted_path, origin_coords, tilt_azimuth, tilt_factor
+        )
         contours = extract_strandline_contours_windowed(tilted_path, target_elevation)
-        with rasterio.open(tilted_path) as src:
-            crs = src.crs
-            if include_dem:
-                write_dem_to_gpkg(src.read(1), src.transform, crs, output_gpkg_path)
+        if include_dem:
+            with rasterio.open(tilted_path) as src:
+                write_dem_to_gpkg(src.read(1), tilted_transform, crs, output_gpkg_path)
         os.remove(tilted_path)
         lines = list(contours.geoms)
     else:

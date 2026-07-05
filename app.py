@@ -4,7 +4,7 @@ import warnings
 
 import rasterio
 import geopandas as gpd
-from shapely.geometry import LineString
+from shapely.geometry import LineString, MultiLineString
 
 from main import (
     check_available_ram_mb,
@@ -18,10 +18,40 @@ from main import (
 )
 
 
+def _as_line_list(geometry):
+    """
+    Normalizes a shapely geometry into a flat list of LineStrings.
+
+    extract_strandline_contours_windowed runs its fragments through
+    shapely.ops.linemerge, which returns a single LineString when everything
+    merges into one continuous path, or a MultiLineString when there are
+    multiple disjoint pieces -- NOT always a MultiLineString. Treating the
+    result as always having a `.geoms` attribute crashes (AttributeError)
+    on the single-continuous-strandline case, which is the common case, not
+    an edge case.
+    """
+    if geometry.is_empty:
+        return []
+    if isinstance(geometry, MultiLineString):
+        return list(geometry.geoms)
+    return [geometry]
+
+
 #Simulation of your execution runtime or FastAPI Route handler
 def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
                  target_elevation, output_gpkg_path, include_dem=True):
     print("--- Starting GIA Processing ---")
+
+    # Ensure the output directory exists, and start from a clean output file.
+    # write_dem_to_gpkg raises if a raster table of the same name already
+    # exists at this path, so re-running the pipeline against the same
+    # output_gpkg_path (a very normal thing to do during iteration, retries,
+    # or reprocessing) would otherwise crash instead of just overwriting.
+    output_dir = os.path.dirname(output_gpkg_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    if os.path.exists(output_gpkg_path):
+        os.remove(output_gpkg_path)
 
     #Check system constraints dynamically
     free_ram = check_available_ram_mb()
@@ -39,15 +69,30 @@ def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
         print("ALERT: File memory footprint exceeds safe RAM threshold. Using windowed pipeline.")
         with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tmp:
             tilted_path = tmp.name
-        tilted_path, tilted_transform, crs = tilt_DEM_windowed(
-            file_path, tilted_path, origin_coords, tilt_azimuth, tilt_factor
-        )
-        contours = extract_strandline_contours_windowed(tilted_path, target_elevation)
-        if include_dem:
-            with rasterio.open(tilted_path) as src:
-                write_dem_to_gpkg(src.read(1), tilted_transform, crs, output_gpkg_path)
-        os.remove(tilted_path)
-        lines = list(contours.geoms)
+        try:
+            tilted_path, tilted_transform, crs = tilt_DEM_windowed(
+                file_path, tilted_path, origin_coords, tilt_azimuth, tilt_factor
+            )
+            contours = extract_strandline_contours_windowed(tilted_path, target_elevation)
+            if include_dem:
+                # KNOWN LIMITATION: write_dem_to_gpkg only accepts a full
+                # in-memory array -- there's no tiled/streaming GeoPackage
+                # raster writer yet. Requesting include_dem here means the
+                # entire tilted raster gets read back into memory anyway,
+                # which defeats the memory-safety purpose of the windowed
+                # pipeline for files large enough to have needed it.
+                warnings.warn(
+                    "include_dem=True with the windowed pipeline reads the entire tilted "
+                    "raster back into memory to embed it in the GeoPackage, which negates "
+                    "the memory savings windowing is meant to provide for large files.",
+                    UserWarning
+                )
+                with rasterio.open(tilted_path) as src:
+                    write_dem_to_gpkg(src.read(1), tilted_transform, crs, output_gpkg_path)
+            lines = _as_line_list(contours)
+        finally:
+            if os.path.exists(tilted_path):
+                os.remove(tilted_path)
     else:
         print("PASS: File is safe for standard in-memory operations.")
         dem_array, transform, crs = load_DEM(file_path, needs_casting, band_count)

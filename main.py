@@ -5,6 +5,9 @@ import warnings
 import psutil
 from pyproj import Geod
 from skimage import measure
+from rasterio.windows import Window
+from shapely.geometry import LineString, box, MultiLineString
+from shapely.ops import linemerge
 
 def check_available_ram_mb():
     """
@@ -99,14 +102,92 @@ def load_DEM(DEM_path, needs_casting, band_count):
         raise IOError(f"Failed to read the file. Details: {e}")
 
 
-def load_DEM_windowed(DEM_path, needs_casting, band_count):
+def tilt_DEM_windowed(DEM_path, output_path, origin_coords, tilt_azimuth, tilt_factor, block_size=512):
     """
-    Placeholder for specialized windowed reading logic.
-    Called when files exceed the system RAM safety margin.
+    Streams the DEM through its native block windows, applying the directional
+    tilt to each block independently and writing the result straight to disk.
+    Used when raster_io_check flags a file as exceeding the safe RAM budget.
     """
-    print(f"[Windowed Engine] Processing {DEM_path} sequentially in blocks...")
-    # Windowed loop execution goes here
-    return "WINDOWED_STREAM_SUCCESS"
+    with rasterio.open(DEM_path) as src:
+        profile = src.profile.copy()
+        profile.update(dtype='float32')
+        with rasterio.open(output_path, 'w', **profile) as dst:
+            for ji, window in src.block_windows(1):
+                block = src.read(1, window=window).astype('float32')
+                nodata = src.nodata
+                if nodata is not None:
+                    block = np.where(block == nodata, np.nan, block)
+                window_transform = src.window_transform(window)
+                tilted_block = calculate_tilt(block, window_transform, origin_coords, tilt_azimuth, tilt_factor)
+                dst.write(tilted_block, 1, window=window)
+    return output_path
+
+
+def extract_strandline_contours_windowed(tilted_DEM_path, target_elevation, tile_size=1024, halo=32):
+    """
+    Extracts strandline contours tile-by-tile from a large tilted DEM, using a
+    padded "halo" read around each tile so contours crossing tile boundaries
+    still trace correctly, then clips and merges fragments back together.
+    """
+    fragments = []
+    with rasterio.open(tilted_DEM_path) as src:
+        width, height = src.width, src.height
+        for row_off in range(0, height, tile_size):
+            for col_off in range(0, width, tile_size):
+                core_h = min(tile_size, height - row_off)
+                core_w = min(tile_size, width - col_off)
+                # Padded read window, clipped to raster bounds
+                pad_row_off = max(row_off - halo, 0)
+                pad_col_off = max(col_off - halo, 0)
+                pad_row_end = min(row_off + core_h + halo, height)
+                pad_col_end = min(col_off + core_w + halo, width)
+                padded_window = Window(pad_col_off, pad_row_off,
+                                        pad_col_end - pad_col_off,
+                                        pad_row_end - pad_row_off)
+                block = src.read(1, window=padded_window)
+                nodata = src.nodata
+                if nodata is not None:
+                    block = np.where(block == nodata, np.nan, block)
+                window_transform = src.window_transform(padded_window)
+                # Reuses the existing full-array contour function unchanged
+                tile_contours = extract_strandline_contours(block, window_transform, target_elevation)
+                # Core tile's real-world bounding box (unpadded)
+                core_transform = src.window_transform(Window(col_off, row_off, core_w, core_h))
+                minx, maxy = core_transform * (0, 0)
+                maxx, miny = core_transform * (core_w, core_h)
+                core_bbox = box(minx, miny, maxx, maxy)
+                for coords in tile_contours:
+                    line = LineString(coords)
+                    clipped = line.intersection(core_bbox)
+                    if clipped.is_empty:
+                        continue
+                    # intersection can return LineString or MultiLineString
+                    if clipped.geom_type == "LineString":
+                        fragments.append(clipped)
+                    else:
+                        fragments.extend(clipped.geoms)
+    merged = linemerge(MultiLineString(fragments))
+    return merged
+
+
+def write_dem_to_gpkg(dem_array, transform, crs, gpkg_path, table_name="modified_dem"):
+    """
+    Embeds the (tilted) DEM as a raster layer inside a GeoPackage, so the
+    contour vector layer and the modified DEM can ship as a single .gpkg file.
+    """
+    profile = {
+        "driver": "GPKG",
+        "height": dem_array.shape[0],
+        "width": dem_array.shape[1],
+        "count": 1,
+        "dtype": "float32",
+        "crs": crs,
+        "transform": transform,
+        "RASTER_TABLE": table_name,
+        "APPEND_SUBDATASET": "YES",   # lets it coexist with the contour vector layer
+    }
+    with rasterio.open(gpkg_path, "w", **profile) as dst:
+        dst.write(dem_array, 1)
 
 
 def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_factor):

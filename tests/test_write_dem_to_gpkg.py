@@ -86,12 +86,15 @@ def test_nan_values_round_trip_but_no_nodata_is_declared(tmp_path, transform):
 
 
 def test_multiple_distinct_table_names_coexist(tmp_path, transform):
+    # Accreting a second raster table onto the same file is exactly the
+    # multi-layer case overwrite=True's whole-file delete isn't meant for --
+    # opt out on the second (and later) calls to get the old append behavior.
     array_a = np.full((10, 10), 111.0, dtype="float32")
     array_b = np.full((10, 10), 222.0, dtype="float32")
     path = str(tmp_path / "dem.gpkg")
 
     write_dem_to_gpkg(array_a, transform, "EPSG:4326", path, table_name="dem_a")
-    write_dem_to_gpkg(array_b, transform, "EPSG:4326", path, table_name="dem_b")
+    write_dem_to_gpkg(array_b, transform, "EPSG:4326", path, table_name="dem_b", overwrite=False)
 
     with rasterio.open(path) as src:
         assert set(src.subdatasets) == {f"GPKG:{path}:dem_a", f"GPKG:{path}:dem_b"}
@@ -101,18 +104,29 @@ def test_multiple_distinct_table_names_coexist(tmp_path, transform):
         assert src.read(1).mean() == pytest.approx(222.0)
 
 
-def test_writing_same_table_name_twice_raises(tmp_path, transform):
-    # KNOWN LIMITATION: calling write_dem_to_gpkg a second time with the
-    # SAME table_name at the same path does NOT silently overwrite -- it
-    # raises. Worth knowing before, e.g., re-running a pipeline against an
-    # existing output path with default arguments.
+def test_writing_same_path_twice_overwrites_by_default(tmp_path, transform):
+    # Default overwrite=True: a second call at the same path succeeds and
+    # the file reflects only the second call's data -- the first write's
+    # table is gone entirely (the whole file is replaced), not merged.
     array_a = np.full((10, 10), 111.0, dtype="float32")
     array_b = np.full((10, 10), 999.0, dtype="float32")
     path = str(tmp_path / "dem.gpkg")
 
     write_dem_to_gpkg(array_a, transform, "EPSG:4326", path, table_name="dem")
+    write_dem_to_gpkg(array_b, transform, "EPSG:4326", path, table_name="dem")
+
+    with rasterio.open(f"GPKG:{path}:dem") as src:
+        assert src.read(1).mean() == pytest.approx(999.0)
+
+
+def test_overwrite_false_restores_strict_raise_behavior(tmp_path, transform):
+    array_a = np.full((10, 10), 111.0, dtype="float32")
+    array_b = np.full((10, 10), 999.0, dtype="float32")
+    path = str(tmp_path / "dem.gpkg")
+
+    write_dem_to_gpkg(array_a, transform, "EPSG:4326", path, table_name="dem", overwrite=False)
     with pytest.raises(rasterio.errors.RasterioIOError):
-        write_dem_to_gpkg(array_b, transform, "EPSG:4326", path, table_name="dem")
+        write_dem_to_gpkg(array_b, transform, "EPSG:4326", path, table_name="dem", overwrite=False)
 
     # The original write should be untouched by the failed second attempt.
     with rasterio.open(f"GPKG:{path}:dem") as src:
@@ -145,7 +159,9 @@ def test_coexists_with_a_vector_layer_written_after(tmp_path, transform):
 
 def test_coexists_with_a_vector_layer_written_before(tmp_path, transform):
     # The reverse order also works -- vector layer written first, raster
-    # added to the same file afterward.
+    # added to the same file afterward -- but only with overwrite=False,
+    # since the default overwrite=True would delete the whole file (vector
+    # layer included) before writing the raster.
     import geopandas as gpd
     from shapely.geometry import LineString
 
@@ -154,7 +170,7 @@ def test_coexists_with_a_vector_layer_written_before(tmp_path, transform):
 
     gdf = gpd.GeoDataFrame(geometry=[LineString([(-105, 45), (-104.9, 44.9)])], crs="EPSG:4326")
     gdf.to_file(path, layer="strandline_contour", driver="GPKG")
-    write_dem_to_gpkg(array, transform, "EPSG:4326", path, table_name="modified_dem")
+    write_dem_to_gpkg(array, transform, "EPSG:4326", path, table_name="modified_dem", overwrite=False)
 
     with rasterio.open(f"GPKG:{path}:modified_dem") as src:
         assert src.read(1).mean() == pytest.approx(777.0)

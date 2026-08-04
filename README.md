@@ -77,13 +77,13 @@ pytest -m cryocloud  # also run tests that only meaningfully validate real syste
 ## Known limitations
 A few behaviors are intentional trade-offs or documented gaps rather than bugs, and are worth knowing about:
 
-- **`include_dem=True` with the windowed pipeline** still reads the entire tilted raster back into memory to embed it in the GeoPackage (`write_dem_to_gpkg` has no tiled/streaming raster writer yet), which negates the memory savings windowing is otherwise meant to provide for very large files. `process_dem` raises a `UserWarning` when this happens.
-- **Re-running `write_dem_to_gpkg` with the same `table_name` at the same path raises** rather than overwriting; `process_dem` works around this by clearing any pre-existing output file at the start of each run.
+- **`write_dem_to_gpkg` overwrites an existing file at the same path by default** (`overwrite=True`); pass `overwrite=False` to restore the strict raise-if-exists behavior (e.g. to add a raster layer to an existing multi-layer `.gpkg` without touching its other layers). `write_dem_to_gpkg_windowed` shares the same `overwrite` parameter and default.
 - **No `nodata` value is declared on GeoPackage raster output** — NaN values round-trip correctly as bit patterns, but downstream tools that rely on an explicit nodata tag (rather than recognizing NaN by convention) will treat those cells as literal data.
 - **Multi-tile DEM mosaicking is not yet supported.** Input DEMs are expected as a single GeoTIFF; if a study area spans multiple source tiles (e.g., multiple 1°x1° USGS tiles), the user is currently responsible for mosaicking them beforehand.
 
 ## Documentation
-This application utilizes the following core libraries for spatial data processing:
+
+### Backend / geoprocessing
 * [rasterio](https://rasterio.readthedocs.io/en/stable/) - Reading/writing GeoTIFF and GeoPackage raster data, and windowed/tiled I/O for large files.
 * [scikit-image (skimage.measure)](https://scikit-image.org/docs/stable/auto_examples/edges/plot_contours.html) - Finds constant-value (contour) paths in the tilted DEM array.
 * [pyproj](https://pyproj4.github.io/pyproj/stable/) - Geodetic distance/azimuth calculations (`Geod`) used to project the tilt across the DEM using true curved-earth geometry.
@@ -92,3 +92,15 @@ This application utilizes the following core libraries for spatial data processi
 * [GeoPandas](https://geopandas.org/en/stable/docs.html) - Configuring and exporting the strandline contour vector layer to GeoPackage.
 * [psutil](https://psutil.readthedocs.io/en/latest/) - Queries live system memory availability to decide between the standard and windowed pipelines.
 * [pytest](https://docs.pytest.org/en/stable/) - Test suite framework, including fixtures for synthetic raster generation and markers for environment-dependent tests.
+
+### API layer
+* [FastAPI](https://fastapi.tiangolo.com/) - HTTP layer wrapping `app.process_dem`; request validation, multipart form/file handling, and the interactive `/docs` schema.
+* [uvicorn](https://www.uvicorn.org/) - ASGI server that runs the FastAPI app, both for local development and inside a CryoCloud pod behind `jupyter-server-proxy`.
+* [python-multipart](https://github.com/Kludex/python-multipart) - Parses the multipart form data FastAPI uses for file uploads and form fields.
+
+### Frontend
+* [React](https://react.dev/) - Component-based UI for the multi-step form, results, and preview panels.
+* [Vite](https://vite.dev/) - Dev server (with API proxying) and production build tooling for the frontend.
+* [Tailwind CSS](https://tailwindcss.com/) - Utility-first styling used throughout the frontend components.
+* [Leaflet](https://leafletjs.com/) - Interactive map rendering for the input/result preview panel.
+* [georaster-layer-for-leaflet](https://github.com/GeoTIFF/georaster-layer-for-leaflet) - Renders GeoTIFF rasters (the tilted DEM result) directly as a Leaflet layer in-browser.

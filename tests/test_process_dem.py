@@ -8,6 +8,7 @@ since process_dem doesn't expose a way to inject the RAM budget directly.
 """
 import glob
 import os
+import warnings
 
 import numpy as np
 import pytest
@@ -117,11 +118,17 @@ def test_windowed_branch_handles_single_merged_linestring(tmp_path, monkeypatch)
 
 
 def test_windowed_branch_writes_both_layers_when_include_dem_true(tmp_path, monkeypatch):
+    # Regression test: this used to emit a UserWarning about include_dem=True
+    # negating the windowed pipeline's memory savings (write_dem_to_gpkg only
+    # accepted a full in-memory array). write_dem_to_gpkg_windowed removed
+    # that limitation, so no warning should fire anymore -- see
+    # TARGET_ELEVATION_AND_GPKG_TASKS.md Task 7.
     _force_windowed(monkeypatch)
     dem_path, _ = _sloped_dem(tmp_path)
     output_path = str(tmp_path / "output.gpkg")
 
-    with pytest.warns(UserWarning, match="negates the memory savings"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         app.process_dem(dem_path, ORIGIN, 90, 0.0, 450, output_path, include_dem=True)
 
     assert "strandline_contour" in gpd.list_layers(output_path)["name"].values

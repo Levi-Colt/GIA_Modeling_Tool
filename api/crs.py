@@ -34,6 +34,7 @@ with each other regardless of what the client uploaded or typed in.
 import re
 from dataclasses import dataclass
 
+import numpy as np
 import rasterio
 from rasterio.transform import array_bounds
 from rasterio.warp import calculate_default_transform, reproject, Resampling
@@ -214,6 +215,29 @@ def check_origin_within_threshold(
             f"extent, which exceeds the {threshold_meters:.0f} m plausibility threshold. "
             "Check that the origin and the DEM cover the same location."
         )
+
+
+def sample_elevation_at_point(raster_path: str, lon: float, lat: float) -> float | None:
+    """
+    Samples the raster's band-1 value at (lon, lat), assuming raster_path
+    is already in EPSG:4326.
+
+    Returns None if the point falls outside the raster's pixel grid, or if
+    the sampled cell is nodata / NaN. Returns the float value otherwise.
+    """
+    with rasterio.open(raster_path) as src:
+        row, col = rasterio.transform.rowcol(src.transform, lon, lat)
+        if not (0 <= row < src.height and 0 <= col < src.width):
+            return None
+
+        window = rasterio.windows.Window(col, row, 1, 1)
+        value = src.read(1, window=window)[0, 0]
+
+        if src.nodata is not None and value == src.nodata:
+            return None
+        if np.isnan(value):
+            return None
+        return float(value)
 
 
 @dataclass

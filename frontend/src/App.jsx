@@ -72,11 +72,13 @@ function ProcessingPage() {
     if (!isReadyToRun(formState)) return
     setRunState({ status: 'running', startedAt: Date.now(), result: null, error: null })
     try {
-      const { blob, reprojectedFrom, warnings } = await runProcess(buildProcessPayload(formState))
+      const { blob, reprojectedFrom, warnings, elevationSource, elevationNote } = await runProcess(
+        buildProcessPayload(formState)
+      )
       setRunState({
         status: 'success',
         startedAt: null,
-        result: { blob, filename: 'strandlines.gpkg', reprojectedFrom, warnings },
+        result: { blob, filename: 'strandlines.gpkg', reprojectedFrom, warnings, elevationSource, elevationNote },
         error: null
       })
     } catch (err) {

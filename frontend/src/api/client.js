@@ -22,6 +22,25 @@ export async function runPreflight(file, path) {
   return res.json()
 }
 
+export async function originElevation(file, path, originMode, originValue, originEpsg) {
+  const form = new FormData()
+  if (file) form.append('dem_file', file)
+  if (path) form.append('file_path', path)
+  form.append('origin_mode', originMode)
+  form.append('origin_value', originValue)
+  if (originEpsg) form.append('origin_epsg', originEpsg)
+
+  const res = await fetch(`${API_BASE}origin-elevation`, {
+    method: 'POST',
+    body: form
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}))
+    throw new Error(detail.detail || 'Origin elevation check failed')
+  }
+  return res.json()
+}
+
 export async function runProcess(payload) {
   const form = new FormData()
   Object.entries(payload).forEach(([key, value]) => {
@@ -35,6 +54,8 @@ export async function runProcess(payload) {
 
   const reprojectedFrom = res.headers.get('X-Source-CRS-Reprojected-From')
   const warnings = res.headers.get('X-Processing-Warnings')
+  const elevationSource = res.headers.get('X-Target-Elevation-Source')
+  const elevationNote = res.headers.get('X-Target-Elevation-Note')
 
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}))
@@ -42,5 +63,5 @@ export async function runProcess(payload) {
   }
 
   const blob = await res.blob()
-  return { blob, reprojectedFrom, warnings }
+  return { blob, reprojectedFrom, warnings, elevationSource, elevationNote }
 }

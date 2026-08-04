@@ -12,7 +12,7 @@ function triggerDownload(blob, filename) {
 }
 
 export default function ResultsSuccess({ result, formState, onRunAgain, onAdjustInputs }) {
-  const { blob, filename, reprojectedFrom, warnings } = result
+  const { blob, filename, reprojectedFrom, warnings, elevationNote } = result
 
   return (
     <div className="space-y-4 py-2">
@@ -29,6 +29,7 @@ export default function ResultsSuccess({ result, formState, onRunAgain, onAdjust
           Input was reprojected from {reprojectedFrom} to EPSG:4326 before processing.
         </Banner>
       )}
+      {elevationNote && <Banner variant="info">{elevationNote}</Banner>}
       {warnings && <Banner variant="warning">{warnings}</Banner>}
 
       <div className="rounded-md border border-gray-200 p-4">

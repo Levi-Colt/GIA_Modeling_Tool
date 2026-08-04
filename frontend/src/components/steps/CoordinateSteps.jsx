@@ -1,4 +1,5 @@
 import { useProcessing } from '../../context/ProcessingContext.jsx'
+import { originElevation } from '../../api/client.js'
 
 const MODE_CONFIG = {
   match_raster: { placeholder: '"x,y" in the raster\'s native CRS', showEpsg: false },
@@ -24,6 +25,43 @@ export function CoordinatesStep() {
   const { formState, updateForm } = useProcessing()
   const config = MODE_CONFIG[formState.originMode]
 
+  // Preview the DEM's elevation at the resolved origin once the file is
+  // known-good and the coordinate fields are complete enough to resolve —
+  // fires on blur (mirrors UploadStep's path-input pattern), not on every
+  // keystroke, since it's a real backend round-trip including reprojection.
+  // /api/process re-derives this independently either way; this is UX only.
+  async function checkElevation() {
+    const originValue = formState.originValue.trim()
+    if (formState.preflightStatus !== 'valid' || !originValue) return
+    if (formState.originMode === 'epsg' && !formState.originEpsg.trim()) return
+
+    updateForm({ elevationCheckStatus: 'checking', elevationCheckValue: null })
+    try {
+      const result = await originElevation(
+        formState.demFile,
+        formState.demPath,
+        formState.originMode,
+        originValue,
+        formState.originEpsg
+      )
+      if (result.within_bounds && result.elevation !== null) {
+        updateForm({
+          elevationCheckStatus: 'dem',
+          elevationCheckValue: result.elevation,
+          targetElevation: result.elevation
+        })
+      } else if (result.reason === 'nodata') {
+        updateForm({ elevationCheckStatus: 'nodata', elevationCheckValue: null })
+      } else {
+        updateForm({ elevationCheckStatus: 'outside_bounds', elevationCheckValue: null })
+      }
+    } catch {
+      // Preview call failed -- fall back to a plain editable field, same as
+      // if the check had never run.
+      updateForm({ elevationCheckStatus: 'idle', elevationCheckValue: null })
+    }
+  }
+
   return (
     <section id="step-coordinates" className="border-t border-gray-100 pt-3">
       <p className="mb-2 text-xs font-medium text-blue-600">3 · Coordinates</p>
@@ -32,6 +70,7 @@ export function CoordinatesStep() {
         placeholder={config.placeholder}
         value={formState.originValue}
         onChange={(e) => updateForm({ originValue: e.target.value })}
+        onBlur={checkElevation}
         className="w-full"
       />
       {config.showEpsg && (
@@ -40,6 +79,7 @@ export function CoordinatesStep() {
           placeholder="EPSG:32612"
           value={formState.originEpsg}
           onChange={(e) => updateForm({ originEpsg: e.target.value })}
+          onBlur={checkElevation}
           className="mt-2 w-full"
         />
       )}

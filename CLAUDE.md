@@ -3,7 +3,8 @@
 ## Architecture
 - `app.py` / `main.py`: backend geoprocessing pipeline (untouched by the API layer,
   keeps its existing test suite intact). Entry point: `app.py::process_dem()`.
-- `api/`: FastAPI layer wrapping the backend. Single endpoint: `POST /process`.
+- `api/`: FastAPI layer wrapping the backend. Routes: `POST /api/process`,
+  `POST /api/preflight`, `POST /api/origin-elevation`, `GET /api/health`.
   See `api/README.md` for the full request/response contract.
 - `frontend/`: React (JS, not TS) + Vite + Tailwind. See `frontend/README.md`
   for structure and what's implemented vs. stubbed.
@@ -14,8 +15,9 @@
   server, no org-wide deployment for now.
 - Distribution model: lab-only for the current feature set. Users clone
   the repo into their own CryoCloud session and build the environment
-  themselves (`environment.yml`, not yet added — see Open items). No
-  CryoCloud/2i2c admin coordination needed at this stage. Revisit an
+  themselves via `environment.yml` (conda env `gia-modeling-tool`, includes
+  Node for the frontend build alongside the Python geoprocessing/API deps).
+  No CryoCloud/2i2c admin coordination needed at this stage. Revisit an
   org-wide shared-image submission (PR to CryoInTheCloud/hub-image) only
   if the tool grows beyond single-lab use.
 - Exposure mechanism: `jupyter-server-proxy`, running the FastAPI app
@@ -45,7 +47,7 @@
   path has no client-accessible bytes at all, and even drag-and-drop
   shouldn't re-implement validation logic separately from the backend's
   `raster_io_check` — so both route through one shared preflight call
-  (see Open items: this endpoint doesn't exist yet).
+  (`POST /api/preflight`).
 - Map visualization panel is an intentionally dumb, pipeline-agnostic
   component — it never calls into geoprocessing logic, just renders
   whatever `{extent, origin, azimuthLine, contour?, tiltedRasterUrl?}`
@@ -54,16 +56,15 @@
   only available after a real `/process` run) are treated as two separate
   future states, not one that assumes it can show everything from day one.
   See `GIA_Tool_Penpot_Spec.md` for the full contract and rationale.
+- Target elevation is DEM-authoritative: when the origin falls inside the
+  DEM on valid data, the DEM's own elevation there overrides any submitted
+  `target_elevation` (the tilt plane pivots through the origin, so the two
+  must agree for the contour to pass through it). Manual entry only applies
+  outside the DEM's bounds or on nodata cells. Enforced server-side in
+  `/api/process`; `/api/origin-elevation` is a preview-only convenience, not
+  a second source of truth.
 
 ## Open items
-- **`/api/preflight` endpoint doesn't exist yet.** New scope, not in
-  `api/README.md`. Should wrap the existing `raster_io_check` (cheap —
-  metadata-only, no full raster load) behind a fast route hit on file drop
-  or path entry/blur. The frontend scaffold already assumes this endpoint
-  exists (`frontend/src/api/client.js`) — this is the piece that connects
-  the two sides.
-- No `environment.yml` yet for the CryoCloud per-user env (needed for the
-  clone-and-deploy distribution model).
 - Sync vs. async processing for very large DEMs — currently synchronous
   (threadpool-backed), not yet needing a job-queue/polling pattern. The
   frontend's loading state is deliberately indeterminate to match this.
@@ -85,7 +86,8 @@
   wireframe rationale and component contracts are in
   `GIA_Tool_Penpot_Spec.md`. Scaffold exists in `frontend/` (React/Vite) —
   see `frontend/README.md` for what's implemented vs. stubbed.
-- Immediate next milestone: wire frontend + API + backend end-to-end
-  (including the new preflight endpoint) for a first usable version to
-  test against real GeoTIFFs and tilt data in a CryoCloud pod. Map
-  visualization intentionally deferred past this milestone.
+- Frontend + API + backend are wired end-to-end (including preflight,
+  origin-elevation, and target-elevation override) and covered by tests
+  against synthetic fixtures. Not yet validated against real GeoTIFFs and
+  tilt data in an actual CryoCloud pod — that's the next milestone. Map
+  visualization remains intentionally deferred (see Key design decisions).

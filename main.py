@@ -232,11 +232,33 @@ def extract_strandline_contours_windowed(tilted_DEM_path, target_elevation, tile
     return merged
 
 
-def write_dem_to_gpkg(dem_array, transform, crs, gpkg_path, table_name="modified_dem"):
+def _prepare_gpkg_output(gpkg_path, overwrite):
+    """
+    Deletes any pre-existing file at gpkg_path when overwrite is True.
+
+    Deletes the *entire* file, not just a named raster table -- consistent
+    with the assumption used throughout this codebase that one .gpkg output
+    path belongs to one job/run, not a multi-layer file accreted across
+    separate calls. Shared by write_dem_to_gpkg and write_dem_to_gpkg_windowed
+    so the two don't drift out of sync.
+    """
+    if overwrite and os.path.exists(gpkg_path):
+        os.remove(gpkg_path)
+
+
+def write_dem_to_gpkg(dem_array, transform, crs, gpkg_path, table_name="modified_dem", overwrite=True):
     """
     Embeds the (tilted) DEM as a raster layer inside a GeoPackage, so the
     contour vector layer and the modified DEM can ship as a single .gpkg file.
+
+    overwrite=True (default) deletes any pre-existing file at gpkg_path
+    first -- the entire file, not just the named raster table, since this
+    codebase treats one .gpkg output path as belonging to one job/run.
+    Direct callers that instead want to add a raster layer to an existing
+    multi-layer .gpkg without touching its other layers can pass
+    overwrite=False to restore GDAL's strict raise-if-exists behavior.
     """
+    _prepare_gpkg_output(gpkg_path, overwrite)
     profile = {
         "driver": "GPKG",
         "height": dem_array.shape[0],
@@ -250,6 +272,42 @@ def write_dem_to_gpkg(dem_array, transform, crs, gpkg_path, table_name="modified
     }
     with rasterio.open(gpkg_path, "w", **profile) as dst:
         dst.write(dem_array, 1)
+
+
+def write_dem_to_gpkg_windowed(source_raster_path, gpkg_path, table_name="modified_dem",
+                                tile_size=512, overwrite=True):
+    """
+    Copies an on-disk raster into a GeoPackage raster table tile-by-tile,
+    never holding more than one tile_size x tile_size block in memory.
+    Used by the windowed pipeline so include_dem=True no longer negates
+    the memory savings windowing exists to provide (see app.py).
+
+    overwrite behaves identically to write_dem_to_gpkg's own parameter (see
+    _prepare_gpkg_output) -- both delete the whole file, not just the named
+    table, when a prior file already exists at gpkg_path.
+    """
+    _prepare_gpkg_output(gpkg_path, overwrite)
+    with rasterio.open(source_raster_path) as src:
+        profile = {
+            "driver": "GPKG",
+            "height": src.height,
+            "width": src.width,
+            "count": 1,
+            "dtype": "float32",
+            "crs": src.crs,
+            "transform": src.transform,
+            "RASTER_TABLE": table_name,
+            "APPEND_SUBDATASET": "YES",
+        }
+        with rasterio.open(gpkg_path, "w", **profile) as dst:
+            for row_off in range(0, src.height, tile_size):
+                for col_off in range(0, src.width, tile_size):
+                    win_h = min(tile_size, src.height - row_off)
+                    win_w = min(tile_size, src.width - col_off)
+                    window = Window(col_off, row_off, win_w, win_h)
+                    block = src.read(1, window=window).astype("float32")
+                    dst.write(block, 1, window=window)
+    return gpkg_path
 
 
 def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_factor, warn_if_disconnected=True):

@@ -13,6 +13,13 @@ const defaultState = {
   tiltAzimuth: '',
   tiltFactor: '',
   targetElevation: '',
+  // Preview-only state for the /api/origin-elevation check, driven by
+  // blurring the coordinate input(s) — see CoordinateSteps.jsx. Not a
+  // "mode" for targetElevation itself (which stays one plain field either
+  // way); this just tracks whether a preview lookup is in flight or what
+  // it found, so TiltAndProductsSteps.jsx can render accordingly.
+  elevationCheckStatus: 'idle', // idle | checking | dem | outside_bounds | nodata
+  elevationCheckValue: null,
   includeDem: true
 }
 
@@ -37,8 +44,8 @@ export function ProcessingProvider({ children }) {
     setFormState((prev) => {
       const next = { ...prev, ...patch }
       // Persist only the fields worth carrying forward — not file objects
-      // or transient preflight status.
-      const { demFile, preflightStatus, preflightMessage, ...persisted } = next
+      // or transient preflight/elevation-check status.
+      const { demFile, preflightStatus, preflightMessage, elevationCheckStatus, elevationCheckValue, ...persisted } = next
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted))
       return next
     })

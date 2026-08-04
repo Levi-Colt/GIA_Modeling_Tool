@@ -1,8 +1,6 @@
 import os
 import tempfile
-import warnings
 
-import rasterio
 import geopandas as gpd
 from shapely.geometry import LineString, MultiLineString
 
@@ -15,6 +13,7 @@ from main import (
     tilt_DEM_windowed,
     extract_strandline_contours_windowed,
     write_dem_to_gpkg,
+    write_dem_to_gpkg_windowed,
 )
 
 
@@ -43,10 +42,11 @@ def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
     print("--- Starting GIA Processing ---")
 
     # Ensure the output directory exists, and start from a clean output file.
-    # write_dem_to_gpkg raises if a raster table of the same name already
-    # exists at this path, so re-running the pipeline against the same
-    # output_gpkg_path (a very normal thing to do during iteration, retries,
-    # or reprocessing) would otherwise crash instead of just overwriting.
+    # write_dem_to_gpkg/write_dem_to_gpkg_windowed each guard against a stale
+    # file when include_dem=True (see their own overwrite parameter), but
+    # this guard is still needed for the include_dem=False path, where
+    # neither is ever called and nothing else would clean up a prior run's
+    # leftover output_gpkg_path before gdf.to_file() below.
     output_dir = os.path.dirname(output_gpkg_path)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
@@ -75,20 +75,7 @@ def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
             )
             contours = extract_strandline_contours_windowed(tilted_path, target_elevation)
             if include_dem:
-                # KNOWN LIMITATION: write_dem_to_gpkg only accepts a full
-                # in-memory array -- there's no tiled/streaming GeoPackage
-                # raster writer yet. Requesting include_dem here means the
-                # entire tilted raster gets read back into memory anyway,
-                # which defeats the memory-safety purpose of the windowed
-                # pipeline for files large enough to have needed it.
-                warnings.warn(
-                    "include_dem=True with the windowed pipeline reads the entire tilted "
-                    "raster back into memory to embed it in the GeoPackage, which negates "
-                    "the memory savings windowing is meant to provide for large files.",
-                    UserWarning
-                )
-                with rasterio.open(tilted_path) as src:
-                    write_dem_to_gpkg(src.read(1), tilted_transform, crs, output_gpkg_path)
+                write_dem_to_gpkg_windowed(tilted_path, output_gpkg_path)
             lines = _as_line_list(contours)
         finally:
             if os.path.exists(tilted_path):

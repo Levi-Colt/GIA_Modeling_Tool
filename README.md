@@ -26,6 +26,31 @@ For running the test suite, install the dev dependencies instead (this also inst
 pip install -r requirements-dev.txt
 ```
 
+## Running in CryoCloud
+
+The full stack (backend + API + built frontend, all served by one FastAPI
+process) is meant to run inside your own CryoCloud (NASA/2i2c JupyterHub)
+pod, exposed via `jupyter-server-proxy`. This is lab-only, clone-and-build
+for now -- no shared/org-wide CryoCloud image, no admin registration needed.
+
+```bash
+conda env create -f environment.yml
+conda activate gia-modeling-tool
+cd frontend && npm install && npm run build && cd ..
+uvicorn api.main:app --host 0.0.0.0 --port <PORT>
+```
+
+Then reach it at the pod's `jupyter-server-proxy` URL:
+`/user/<your-username>/proxy/<PORT>/`. This is a manually-launched proxy
+target, not a registered server-proxy extension, so no 2i2c/CryoCloud admin
+coordination is required.
+
+By default, job workspaces (uploaded/intermediate/output files) live under
+the OS temp directory and are cleaned up after each request. If you'd
+rather they persist on the pod's persistent storage instead (not needed for
+normal operation), point `GIA_STORAGE_DIR` at a directory there before
+starting uvicorn.
+
 ## Usage
 ```python
 from app import process_dem

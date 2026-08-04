@@ -76,6 +76,7 @@ async def _run(origin_mode, origin_value, origin_epsg=None):
         response = await process(
             background_tasks=background_tasks,
             dem_file=upload,
+            file_path=None,
             origin_mode=origin_mode,
             origin_value=origin_value,
             origin_epsg=origin_epsg,

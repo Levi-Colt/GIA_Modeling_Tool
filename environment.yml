@@ -1,0 +1,18 @@
+name: gia-modeling-tool
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - nodejs>=20
+  - pip
+  - pip:
+      - numpy
+      - rasterio
+      - shapely
+      - scikit-image
+      - geopandas
+      - psutil
+      - pyproj
+      - fastapi>=0.110
+      - uvicorn[standard]>=0.29
+      - python-multipart>=0.0.9

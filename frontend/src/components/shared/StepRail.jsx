@@ -1,18 +1,8 @@
-const STEPS = [
-  { id: 'upload', label: 'Upload' },
-  { id: 'mode', label: 'Mode' },
-  { id: 'coordinates', label: 'Coordinates' },
-  { id: 'tilt', label: 'Tilt' },
-  { id: 'products', label: 'Products' }
-]
+import { STEPS, scrollToStep } from '../../utils/steps.js'
 
 // Anchor nav only — never disables/gates a step. See spec: nothing should
 // block a user from reaching step 5 because step 3 "looks unfinished."
 export default function StepRail({ completedIds = [], currentId }) {
-  function scrollToStep(id) {
-    document.getElementById(`step-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  }
-
   return (
     <div className="relative mb-5 flex justify-between px-1">
       <div className="absolute left-5 right-5 top-[13px] h-px bg-gray-200" />

@@ -1,8 +1,33 @@
 # API layer
 
-`POST /process` wraps `app.process_dem` as an HTTP endpoint: upload a DEM
+`POST /api/process` wraps `app.process_dem` as an HTTP endpoint: upload a DEM
 GeoTIFF, describe the tilt origin and parameters, get back a `.gpkg` with the
 strandline contour (and optionally the tilted DEM).
+
+Routes are namespaced under `/api` (`/api/process`, `/api/preflight`,
+`/api/health`) so the frontend's relative `api/...` fetches (required for
+`jupyter-server-proxy` compatibility, see `CLAUDE.md`) resolve correctly with
+no path rewriting needed in either the Vite dev proxy or production.
+
+## `POST /api/preflight`
+
+Cheap, metadata-only companion to `/api/process` — reuses `raster_io_check`
+without running reprojection, origin resolution, or the geoprocessing
+pipeline. Meant to fire on file drop or path entry/blur.
+
+**Request** — multipart form, exactly one of `dem_file` (file upload) or
+`file_path` (string, server-side path). Both present or both absent → `422`.
+
+**Response:**
+```json
+{
+  "crs": "EPSG:32612",
+  "band_count": 1,
+  "use_windowed_io": false,
+  "needs_casting": false,
+  "peak_ram_mb": 812.4
+}
+```
 
 Run locally from the repository root:
 ```bash
@@ -14,7 +39,8 @@ Interactive docs (request/response schema, try-it-out) are served at `/docs`.
 
 | field | type | required | notes |
 |---|---|---|---|
-| `dem_file` | file | yes | GeoTIFF, `.tif`/`.tiff` |
+| `dem_file` | file | exactly one of `dem_file` / `file_path` | GeoTIFF, `.tif`/`.tiff` |
+| `file_path` | string | exactly one of `dem_file` / `file_path` | server-side path, same pod filesystem |
 | `origin_mode` | string | yes | one of `"match_raster"`, `"decimal_degrees"`, `"epsg"` |
 | `origin_value` | string | yes | format depends on `origin_mode` -- see below |
 | `origin_epsg` | string | only if `origin_mode == "epsg"` | e.g. `"EPSG:32612"` |
@@ -66,9 +92,9 @@ runs.
 
 | status | cause |
 |---|---|
-| `422` | unsupported file extension; invalid `origin_mode`; missing `origin_epsg` for `epsg` mode; malformed `origin_value`; unrecognized `origin_epsg`; origin more than 500m from the raster's extent; `target_elevation` outside the DEM's elevation range |
+| `422` | neither or both of `dem_file`/`file_path` provided; unsupported file extension; invalid `origin_mode`; missing `origin_epsg` for `epsg` mode; malformed `origin_value`; unrecognized `origin_epsg`; origin more than 500m from the raster's extent; `target_elevation` outside the DEM's elevation range |
 | `413` | upload exceeds the configured size limit |
-| `400` | corrupted/unreadable GeoTIFF, or other file-not-found conditions |
+| `400` | corrupted/unreadable GeoTIFF; `file_path` does not point to an existing file; other file-not-found conditions |
 | `500` | unexpected processing failure |
 
 A response also carries `X-Source-CRS-Reprojected-From` (if the input raster

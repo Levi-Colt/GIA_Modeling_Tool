@@ -17,7 +17,7 @@ export async function runPreflight(file, path) {
   })
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}))
-    throw new Error(detail.message || 'Preflight check failed')
+    throw new Error(detail.detail || 'Preflight check failed')
   }
   return res.json()
 }
@@ -38,7 +38,7 @@ export async function runProcess(payload) {
 
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}))
-    throw new Error(detail.message || 'Processing failed')
+    throw new Error(detail.detail || 'Processing failed')
   }
 
   const blob = await res.blob()

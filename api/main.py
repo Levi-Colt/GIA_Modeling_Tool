@@ -30,6 +30,7 @@ from starlette.concurrency import run_in_threadpool
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import process_dem  # noqa: E402  (import after sys.path fixup, see above)
+from main import raster_io_check, check_available_ram_mb  # noqa: E402
 
 from api.crs import (  # noqa: E402
     normalize_origin_to_wgs84,
@@ -53,10 +54,11 @@ ORIGIN_MODES = {"match_raster", "decimal_degrees", "epsg"}
 ORIGIN_THRESHOLD_METERS = 500.0
 
 
-@app.post("/process")
+@app.post("/api/process")
 async def process(
     background_tasks: BackgroundTasks,
-    dem_file: UploadFile = File(..., description="Input DEM as a GeoTIFF (.tif/.tiff)"),
+    dem_file: UploadFile | None = File(None, description="Input DEM as a GeoTIFF (.tif/.tiff)"),
+    file_path: str | None = Form(None, description="Server-side path to a GeoTIFF on the same pod filesystem"),
     origin_mode: str = Form(
         ...,
         description="How origin_value is interpreted: 'match_raster', 'decimal_degrees', or 'epsg'",
@@ -81,9 +83,15 @@ async def process(
         True, description="Also embed the tilted DEM as a raster layer in the output"
     ),
 ):
-    # --- Validate the upload and the origin shape up front, before touching disk ---
-    filename = dem_file.filename or ""
-    ext = os.path.splitext(filename)[1].lower()
+    # --- Validate the input shape and the origin shape up front, before touching disk ---
+    if (dem_file is None) == (file_path is None):
+        raise HTTPException(
+            status_code=422,
+            detail="Provide exactly one of dem_file or file_path.",
+        )
+
+    filename = dem_file.filename if dem_file is not None else file_path
+    ext = os.path.splitext(filename or "")[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=422,
@@ -118,20 +126,28 @@ async def process(
     job_dir = create_job_workspace()
     background_tasks.add_task(cleanup_job_workspace, job_dir)
 
-    input_path = os.path.join(job_dir, f"input{ext}")
-    try:
-        size = 0
-        with open(input_path, "wb") as f:
-            while chunk := await dem_file.read(1024 * 1024):
-                size += len(chunk)
-                if size > MAX_UPLOAD_BYTES:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"Upload exceeds the {MAX_UPLOAD_BYTES // (1024**3)} GB limit.",
-                    )
-                f.write(chunk)
-    finally:
-        await dem_file.close()
+    if dem_file is not None:
+        input_path = os.path.join(job_dir, f"input{ext}")
+        try:
+            size = 0
+            with open(input_path, "wb") as f:
+                while chunk := await dem_file.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_UPLOAD_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"Upload exceeds the {MAX_UPLOAD_BYTES // (1024**3)} GB limit.",
+                        )
+                    f.write(chunk)
+        finally:
+            await dem_file.close()
+    else:
+        if not os.path.isfile(file_path):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not find a file at '{file_path}'.",
+            )
+        input_path = file_path
 
     # --- Resolve 'match_raster' against the raster's own native CRS (only
     # known now that the file is on disk), then run the geodesic plausibility
@@ -204,6 +220,92 @@ async def process(
     )
 
 
-@app.get("/health")
+@app.post("/api/preflight")
+async def preflight(
+    background_tasks: BackgroundTasks,
+    dem_file: UploadFile | None = File(None, description="Input DEM as a GeoTIFF (.tif/.tiff)"),
+    file_path: str | None = Form(None, description="Server-side path to a GeoTIFF on the same pod filesystem"),
+):
+    # --- Metadata-only check: reuses raster_io_check's own cost profile, so
+    # this stays cheap enough to fire on drop / on blur. No reprojection or
+    # origin resolution here -- that's /process's job. ---
+    if (dem_file is None) == (file_path is None):
+        raise HTTPException(
+            status_code=422,
+            detail="Provide exactly one of dem_file or file_path.",
+        )
+
+    filename = dem_file.filename if dem_file is not None else file_path
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported file type '{ext}'. Expected one of {sorted(ALLOWED_EXTENSIONS)}.",
+        )
+
+    if dem_file is not None:
+        job_dir = create_job_workspace()
+        background_tasks.add_task(cleanup_job_workspace, job_dir)
+
+        input_path = os.path.join(job_dir, f"input{ext}")
+        try:
+            size = 0
+            with open(input_path, "wb") as f:
+                while chunk := await dem_file.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_UPLOAD_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"Upload exceeds the {MAX_UPLOAD_BYTES // (1024**3)} GB limit.",
+                        )
+                    f.write(chunk)
+        finally:
+            await dem_file.close()
+    else:
+        if not os.path.isfile(file_path):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not find a file at '{file_path}'.",
+            )
+        input_path = file_path
+
+    try:
+        free_ram = check_available_ram_mb()
+        io_check = raster_io_check(input_path, free_ram)
+        crs = get_raster_crs(input_path)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except IOError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except InvalidCRSError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return {
+        "crs": crs,
+        "band_count": io_check["band_count"],
+        "use_windowed_io": io_check["use_windowed_io"],
+        "needs_casting": io_check["needs_casting"],
+        "peak_ram_mb": io_check["peak_ram_mb"],
+    }
+
+
+@app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+# --- Serve the built frontend as static files, so the API and the UI share
+# one process/port -- required for the jupyter-server-proxy deployment path
+# (see CLAUDE.md). Mounted last, and at the very end of this module after
+# every route decorator above: mount order matters in Starlette, and a root
+# mount registered first would shadow the /api/* routes. The isdir guard
+# means `uvicorn api.main:app --reload` still works before `npm run build`
+# has been run -- it just won't serve anything at "/" yet. ---
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+_frontend_dist = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "frontend", "dist",
+)
+if os.path.isdir(_frontend_dist):
+    app.mount("/", StaticFiles(directory=_frontend_dist, html=True), name="frontend")

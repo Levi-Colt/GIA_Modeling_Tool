@@ -10,14 +10,19 @@ export default function CompassRose({ azimuthDeg }) {
       className="pointer-events-none absolute right-3 top-3 z-[1000] flex h-14 w-14 items-center justify-center rounded-full border border-gray-300 bg-white/90 shadow-sm"
       title={`Tilt azimuth: ${rotation}°`}
     >
-      <svg
-        viewBox="0 0 40 40"
-        className="h-9 w-9 transition-transform duration-200"
-        style={{ transform: `rotate(${rotation}deg)` }}
-      >
+      <svg viewBox="0 0 40 40" className="h-9 w-9">
         <circle cx="20" cy="20" r="18" fill="none" stroke="#d1d5db" strokeWidth="1" />
-        <polygon points="20,4 24,20 20,17 16,20" fill="#dc2626" />
-        <polygon points="20,36 24,20 20,23 16,20" fill="#9ca3af" />
+        {/* Only the needle rotates with azimuthDeg -- the ring and the "N"
+            label below are outside this group so they stay fixed pointing
+            north, rather than spinning along and reading as decoration
+            instead of orientation. */}
+        <g
+          className="transition-transform duration-200"
+          style={{ transform: `rotate(${rotation}deg)`, transformOrigin: '20px 20px' }}
+        >
+          <polygon points="20,4 24,20 20,17 16,20" fill="#dc2626" />
+          <polygon points="20,36 24,20 20,23 16,20" fill="#9ca3af" />
+        </g>
         <text x="20" y="12" textAnchor="middle" fontSize="6" fill="#374151">N</text>
       </svg>
     </div>

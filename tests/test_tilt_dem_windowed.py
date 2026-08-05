@@ -17,7 +17,7 @@ import pytest
 import rasterio
 from rasterio.transform import from_origin
 
-from main import tilt_DEM_windowed
+from backend.main import tilt_DEM_windowed
 
 CENTER = (-104.95, 44.95)
 OUTSIDE = (-200.0, 45.0)

@@ -4,7 +4,7 @@ Unit tests for main.extract_strandline_contours.
 import numpy as np
 import pytest
 
-from main import extract_strandline_contours
+from backend.main import extract_strandline_contours
 
 
 def test_contours_positive_elevation_gradient(sloped_dem_array, standard_transform):

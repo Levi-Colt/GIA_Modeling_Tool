@@ -1,5 +1,5 @@
 import { useProcessing } from '../../context/ProcessingContext.jsx'
-import { originElevation } from '../../api/client.js'
+import { originElevation, resolvePoint } from '../../api/client.js'
 
 const MODE_CONFIG = {
   match_raster: { placeholder: '"x,y" in the raster\'s native CRS', showEpsg: false },
@@ -62,6 +62,36 @@ export function CoordinatesStep() {
     }
   }
 
+  // Resolves the origin to (lon, lat) for the map's input preview (origin
+  // marker + azimuth line) -- same blur trigger as checkElevation, since
+  // both are cheap-ish backend round-trips that shouldn't fire on every
+  // keystroke. Purely a preview: /api/process re-derives the real origin
+  // independently either way.
+  async function checkResolvedOrigin() {
+    const originValue = formState.originValue.trim()
+    if (!originValue) return
+    if (formState.originMode === 'epsg' && !formState.originEpsg.trim()) return
+    if (formState.originMode === 'match_raster' && !formState.demCrs) return
+
+    updateForm({ resolveOriginStatus: 'checking' })
+    try {
+      const { lon, lat } = await resolvePoint(
+        formState.originMode,
+        originValue,
+        formState.originEpsg,
+        formState.demCrs
+      )
+      updateForm({ resolveOriginStatus: 'resolved', resolvedOrigin: [lon, lat] })
+    } catch {
+      updateForm({ resolveOriginStatus: 'error', resolvedOrigin: null })
+    }
+  }
+
+  function handleBlur() {
+    checkElevation()
+    checkResolvedOrigin()
+  }
+
   return (
     <section id="step-coordinates" className="border-t border-gray-100 pt-3">
       <p className="mb-2 text-xs font-medium text-blue-600">3 · Coordinates</p>
@@ -70,7 +100,7 @@ export function CoordinatesStep() {
         placeholder={config.placeholder}
         value={formState.originValue}
         onChange={(e) => updateForm({ originValue: e.target.value })}
-        onBlur={checkElevation}
+        onBlur={handleBlur}
         className="w-full"
       />
       {config.showEpsg && (
@@ -79,7 +109,7 @@ export function CoordinatesStep() {
           placeholder="EPSG:32612"
           value={formState.originEpsg}
           onChange={(e) => updateForm({ originEpsg: e.target.value })}
-          onBlur={checkElevation}
+          onBlur={handleBlur}
           className="mt-2 w-full"
         />
       )}

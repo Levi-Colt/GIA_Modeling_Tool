@@ -10,7 +10,7 @@ Grid geometry reminder (see conftest.standard_transform):
 import numpy as np
 import pytest
 
-from main import calculate_tilt
+from backend.main import calculate_tilt
 
 CENTER = (-104.95, 44.95)  # roughly the middle of the 10x10 test grid
 OUTSIDE = (-200.0, 45.0)   # far outside the raster's extent

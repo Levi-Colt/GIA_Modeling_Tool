@@ -9,7 +9,7 @@ real environment and is marked `cryocloud`.
 import numpy as np
 import pytest
 
-from main import raster_io_check
+from backend.main import raster_io_check
 
 
 def test_bad_file_path_raises_file_not_found():
@@ -111,7 +111,7 @@ def test_zero_dimension_raster_raises_value_error(tmp_path, monkeypatch):
         def __exit__(self, *exc):
             return False
 
-    monkeypatch.setattr("main.rasterio.open", lambda path: FakeSrc())
+    monkeypatch.setattr("backend.main.rasterio.open", lambda path: FakeSrc())
 
     with pytest.raises(ValueError, match="missing essential raster dimensions"):
         raster_io_check(str(fake_path), available_ram_mb=1000)

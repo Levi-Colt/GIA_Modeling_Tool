@@ -15,7 +15,7 @@ harmless sanity check anywhere -- but the marker documents its real purpose.)
 """
 import pytest
 
-from main import check_available_ram_mb
+from backend.main import check_available_ram_mb
 
 
 @pytest.mark.cryocloud

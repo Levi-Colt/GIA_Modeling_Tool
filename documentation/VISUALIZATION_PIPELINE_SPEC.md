@@ -1,6 +1,6 @@
 # GIA Modeling Tool — Visualization Pipeline Spec
 
-Companion to `GIA_Tool_Penpot_Spec.md` and `api/README.md`. Covers the map
+Companion to `GIA_Tool_Penpot_Spec.md` and `api-README.md`. Covers the map
 panel's real implementation — currently a placeholder (see `CLAUDE.md`,
 "Open items"). Ties every piece back to what the backend can cheaply
 produce, same discipline as the other spec docs.

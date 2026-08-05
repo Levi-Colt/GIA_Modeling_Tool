@@ -13,7 +13,7 @@ from rasterio.transform import from_origin
 from shapely.geometry import LineString, MultiLineString
 from shapely.ops import linemerge
 
-from main import (
+from backend.main import (
     calculate_tilt,
     extract_strandline_contours,
     tilt_DEM_windowed,

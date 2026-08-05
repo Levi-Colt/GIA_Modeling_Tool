@@ -4,7 +4,7 @@ import tempfile
 import geopandas as gpd
 from shapely.geometry import LineString, MultiLineString
 
-from main import (
+from backend.main import (
     check_available_ram_mb,
     raster_io_check,
     load_DEM,

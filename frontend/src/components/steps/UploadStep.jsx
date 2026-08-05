@@ -1,5 +1,6 @@
+import parseGeoraster from 'georaster'
 import { useProcessing } from '../../context/ProcessingContext.jsx'
-import { runPreflight } from '../../api/client.js'
+import { runPreflight, rasterPreview } from '../../api/client.js'
 
 // States: idle | checking | valid | invalid — identical for drag-drop and
 // typed path, since both resolve through the same preflight call. See spec:
@@ -18,10 +19,28 @@ export default function UploadStep() {
         demFile: file || formState.demFile,
         demPath: path ?? formState.demPath,
         preflightStatus: 'valid',
-        preflightMessage: result.crs ? `readable, ${result.crs}` : 'readable'
+        preflightMessage: result.crs ? `readable, ${result.crs}` : 'readable',
+        boundsWgs84: result.bounds_wgs84 ?? null,
+        demCrs: result.crs ?? null
       })
+      loadRasterPreview(file, path)
     } catch (err) {
       updateForm({ preflightStatus: 'invalid', preflightMessage: err.message })
+    }
+  }
+
+  // Fires once, right after preflight succeeds (not on every keystroke) --
+  // see documentation/VISUALIZATION_PIPELINE_SPEC.md Stage 2. Failure here is silent
+  // (falls back to no raster layer on the map) since preflight having
+  // already succeeded means the DEM itself is fine; a preview failure
+  // shouldn't block or scare the user off an otherwise-valid upload.
+  async function loadRasterPreview(file, path) {
+    try {
+      const arrayBuffer = await rasterPreview(file, path)
+      const georaster = await parseGeoraster(arrayBuffer)
+      updateForm({ rasterPreviewGeoraster: georaster })
+    } catch {
+      updateForm({ rasterPreviewGeoraster: null })
     }
   }
 
@@ -47,7 +66,16 @@ export default function UploadStep() {
           </span>
           <button
             className="text-xs"
-            onClick={() => updateForm({ preflightStatus: 'idle', demFile: null, demPath: '' })}
+            onClick={() =>
+              updateForm({
+                preflightStatus: 'idle',
+                demFile: null,
+                demPath: '',
+                boundsWgs84: null,
+                demCrs: null,
+                rasterPreviewGeoraster: null
+              })
+            }
           >
             Replace
           </button>

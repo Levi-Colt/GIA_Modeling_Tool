@@ -1,7 +1,7 @@
 # GIA Modeling Tool — Penpot wireframe spec
 
 Reference doc for building out the Penpot boards. Ties every screen and
-component back to `api/README.md`'s actual contract so the design doesn't
+component back to `api-README.md`'s actual contract so the design doesn't
 drift from what the backend can do.
 
 ## Working assumptions (confirm before/while building)
@@ -24,7 +24,7 @@ drift from what the backend can do.
   it's likely the *preferred* method for large DEMs once this is real
   (avoids the 2GB upload ceiling entirely).
 - **A lightweight preflight check is new scope**, not yet in
-  `api/README.md`. It should wrap the existing `raster_io_check` (cheap —
+  `api-README.md`. It should wrap the existing `raster_io_check` (cheap —
   metadata-only, no full raster load) behind a fast endpoint hit on file
   drop or path entry/blur, so both entry methods get identical, immediate
   validation before the user reaches "Run model."
@@ -77,43 +77,60 @@ what's "complete." This matters given the unknown skill level of the
 audience — nobody should get stuck unable to reach step 5 because step 3
 looks unfinished.
 
-**Map panel — placeholder for now.** This is a real, committed-to future
-feature, not a nice-to-have, so the layout should reserve its space now
-even though the panel itself renders as an explicit "coming soon" state
-(dashed border, muted icon, one-line description) rather than a built
-map. Deliberately make the placeholder look unfinished — don't let it
-read as a polished empty map — so nobody mistakes reserved layout for a
-shipped feature during handoff.
+**Map panel — implemented.** Originally scaffolded as a placeholder
+("coming soon" dashed-border state, reserving layout only); the real
+visualization pipeline described below has since been built per
+`VISUALIZATION_PIPELINE_SPEC.md`. `MapPanel.jsx` is now a real Leaflet map
+(vanilla Leaflet, no `react-leaflet`), rendered both on the idle form view
+and on the loading/results view, with a fixed-chrome compass rose
+(`CompassRose.jsx`) that rotates with the tilt-azimuth field independent of
+whatever else has resolved.
 
-When the real visualization pipeline gets designed, keep two states of
-this panel conceptually separate, since they have very different
+The two states below were kept conceptually separate through
+implementation, exactly as planned here, since they have very different
 technical requirements:
 - **Input preview** — raster extent, origin point, tilt azimuth direction.
-  All drawable client-side from form values alone, no backend call needed.
-- **Result preview** — the actual tilted contour. Requires the real
-  transform pipeline to have run, so this is inherently tied to the
-  results screen, not something achievable while the user is still typing.
+  Extent/origin come from `/api/preflight` and `/api/resolve-point`
+  respectively (cached client-side); the raster itself comes from
+  `/api/raster-preview`; the azimuth line is the one piece drawn purely
+  client-side, from form values alone, via `utils/geometry.js`.
+- **Result preview** — the actual tilted contour (+ optional tilted DEM
+  raster). Populated only after `/api/process` succeeds, via a separate
+  adapter step (`deriveMapDataFromResult` in `App.jsx`) — this is
+  inherently tied to the results screen, not achievable while the user is
+  still typing.
 
-Don't design one panel that silently assumes it can show both from day
-one — they're different features with different data dependencies.
+The panel never assumed it could show both from day one — they remained
+two separate data flows feeding one dumb renderer.
 
-**Map component contract**: the map is a dumb, pipeline-agnostic
+**Map component contract** (as built): the map is a dumb, pipeline-agnostic
 component. It never calls into geoprocessing logic and doesn't know or
 care what produced its data — it just renders whatever shape of
-in-memory geometry/imagery it's handed. Something like:
+in-memory geometry/imagery it's handed:
 
 ```
-{ extent, origin, azimuthLine, contour?, tiltedRasterUrl? }
+{
+  extent,                // [west, south, east, north] WGS84
+  rasterPreview,         // { georaster } — the input DEM
+  origin,                // [lon, lat]
+  azimuthLine,           // [[lon, lat], [lon, lat]]
+  contour,                // GeoJSON FeatureCollection
+  tiltedRasterPreview    // { georaster } — the tilted DEM
+}
 ```
+(Evolved slightly from the original `{ extent, origin, azimuthLine,
+contour?, tiltedRasterUrl? }` sketch above once the raster fields settled
+on parsed `georaster` objects rather than URLs — see
+`VISUALIZATION_PIPELINE_SPEC.md` for why: raw GeoTIFF bytes parsed
+client-side, not a server-hosted image URL.)
 
-Before processing, the form-state layer populates `extent`/`origin`/
-`azimuthLine` from user input. After processing, a separate adapter step
-populates `contour`/`tiltedRasterUrl` from the `/process` response. The
-map component itself never branches on "am I in input mode or result
-mode" internally in a coupled way — it just renders whatever fields are
-present. This keeps it swappable/testable independent of the actual
-pipeline, and means a future change to the backend's output format only
-touches the adapter, never the map component.
+Before processing, the form-state layer (`deriveMapDataFromForm` in
+`App.jsx`) populates `extent`/`rasterPreview`/`origin`/`azimuthLine` from
+form state. After processing, `deriveMapDataFromResult` populates
+`contour`/`tiltedRasterPreview` from `/api/process`'s response. `MapPanel`
+itself never branches on "am I in input mode or result mode" — it just
+renders whatever fields are present in whatever `mapData` object it's
+handed, so the two adapters can evolve independently of the map component.
 
 **Persistent elements above the step rail:**
 - Preset bar: `Load preset` dropdown + `Save as preset` button.

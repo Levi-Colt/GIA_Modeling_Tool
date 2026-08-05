@@ -11,7 +11,7 @@ import pytest
 import rasterio
 from rasterio.transform import from_origin
 
-from main import write_dem_to_gpkg
+from backend.main import write_dem_to_gpkg
 
 
 @pytest.fixture

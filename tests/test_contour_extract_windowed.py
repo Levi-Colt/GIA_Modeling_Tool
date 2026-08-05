@@ -9,7 +9,7 @@ import rasterio
 from rasterio.transform import from_origin
 from shapely.geometry import MultiLineString
 
-from main import extract_strandline_contours_windowed, tilt_DEM_windowed
+from backend.main import extract_strandline_contours_windowed, tilt_DEM_windowed
 
 
 def _write_dem(path, array, transform, nodata=-9999.0):

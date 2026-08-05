@@ -16,7 +16,7 @@ import rasterio
 import geopandas as gpd
 from rasterio.transform import from_origin
 
-import app
+import backend.app as app
 
 
 ORIGIN = (-104.95, 44.95)

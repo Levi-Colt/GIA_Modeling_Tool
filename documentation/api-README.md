@@ -1,14 +1,46 @@
 # API layer
 
 `POST /api/process` wraps `app.process_dem` as an HTTP endpoint: upload a DEM
-GeoTIFF, describe the tilt origin and parameters, get back a `.gpkg` with the
-strandline contour (and optionally the tilted DEM).
+GeoTIFF, describe the tilt origin and parameters, get back a zip bundle
+containing the strandline contour `.gpkg` (and optionally the tilted DEM),
+plus the small preview artifacts the frontend's map panel renders (see
+"Response bundle" below).
 
 Routes are namespaced under `/api` (`/api/process`, `/api/preflight`,
-`/api/origin-elevation`, `/api/health`) so the frontend's relative `api/...`
-fetches (required for `jupyter-server-proxy` compatibility, see `CLAUDE.md`)
-resolve correctly with no path rewriting needed in either the Vite dev proxy
-or production.
+`/api/resolve-point`, `/api/raster-preview`, `/api/origin-elevation`,
+`/api/health`) so the frontend's relative `api/...` fetches (required for
+`jupyter-server-proxy` compatibility, see `CLAUDE.md`) resolve correctly with
+no path rewriting needed in either the Vite dev proxy or production.
+
+## `POST /api/process` response bundle
+
+The response body is a zip archive (`Content-Type: application/zip`), not a
+bare `.gpkg` file:
+
+```
+strandlines.gpkg    -- unchanged: the same GeoPackage this endpoint always
+                       produced (strandline contour vector layer, plus the
+                       tilted DEM raster layer when include_dem is true)
+contour.geojson     -- the strandline_contour layer, read back from the
+                       .gpkg and dumped to GeoJSON (already EPSG:4326,
+                       since the working raster process_dem tilts is
+                       always reprojected to WGS84 first -- see
+                       api/crs.py)
+preview_tilted.tif  -- present only when include_dem is true. A small,
+                       decimated GeoTIFF read back from the .gpkg's
+                       raster table (see api/raster_preview.py), for the
+                       frontend's map panel -- not a second run of the
+                       tilt/contour pipeline, just a cheap read of
+                       already-computed output.
+```
+
+`contour.geojson`/`preview_tilted.tif` exist purely to feed the frontend
+map panel's result-preview state (see `VISUALIZATION_PIPELINE_SPEC.md`);
+the `.gpkg` inside the zip is byte-identical to what this endpoint returned
+before this bundling was added, so the existing download flow is
+unaffected. All the response headers described below (`X-Source-CRS-...`,
+`X-Processing-Warnings`, `X-Target-Elevation-...`) are unchanged and attach
+to this same zip response.
 
 ## `POST /api/preflight`
 
@@ -23,12 +55,73 @@ pipeline. Meant to fire on file drop or path entry/blur.
 ```json
 {
   "crs": "EPSG:32612",
+  "bounds_wgs84": [-110.62, 45.18, -110.48, 45.31],
   "band_count": 1,
   "use_windowed_io": false,
   "needs_casting": false,
   "peak_ram_mb": 812.4
 }
 ```
+`bounds_wgs84` is `[west, south, east, north]` in degrees -- the raster's own
+extent reprojected to EPSG:4326 (via `get_raster_bounds_wgs84`, the same
+helper `/api/process` uses), for the frontend's map panel to draw the input
+extent and `fitBounds` to it before any raster pixels have loaded.
+
+## `POST /api/resolve-point`
+
+Cheap coordinate resolution, no file I/O -- wraps the same origin-parsing
+functions `/api/process` uses (`parse_xy_pair` /
+`parse_decimal_degrees_hemisphere` / `normalize_origin_to_wgs84` in
+`api/crs.py`) for a live map preview, called on every coordinate-field blur.
+Deliberately not built on `/api/origin-elevation`, which reprojects the
+entire raster just to sample one point -- too expensive to fire that often.
+
+**Request** -- JSON body, not multipart (the only endpoint that isn't):
+```json
+{
+  "origin_mode": "match_raster",
+  "origin_value": "512300,5023100",
+  "origin_epsg": null,
+  "native_crs": "EPSG:32612"
+}
+```
+`native_crs` is required only for `match_raster` mode, and is expected to
+come from `/api/preflight`'s `crs` field, cached client-side -- no raster
+re-read needed. For `decimal_degrees` and `epsg` modes this is a pure
+string-parse + `pyproj` point transform; `native_crs` is ignored.
+
+**Response:**
+```json
+{ "lon": -110.55, "lat": 45.25 }
+```
+`422` on parse failure, or a missing `origin_epsg`/`native_crs` where the
+given `origin_mode` requires one -- same taxonomy as the other
+origin-handling endpoints. There is no 500m plausibility check here (see
+"Plausibility check" below) -- that's only meaningful once a raster is
+involved, and this endpoint deliberately isn't.
+
+## `POST /api/raster-preview`
+
+Same dual file-resolution as `/api/preflight` (`dem_file`/`file_path`).
+Returns a small, decimated, EPSG:4326 GeoTIFF (`Content-Type: image/tiff`)
+of the uploaded/pathed DEM, for the map panel to draw as soon as the file is
+known-good -- fires once, right after `/api/preflight` succeeds, not on
+every keystroke.
+
+Built by `api/raster_preview.py::build_preview_geotiff_bytes`: decimates the
+raster at native resolution first (`rasterio`'s `out_shape`, cheap
+regardless of source file size), then reprojects only that small decimated
+array to EPSG:4326 if it isn't already. The same helper builds
+`/api/process`'s bundled `preview_tilted.tif` (see above), reading from the
+`.gpkg` raster table instead of the raw upload.
+
+`PREVIEW_MAX_DIM` (in `api/raster_preview.py`) caps the longer dimension at
+1024px -- a starting value suggested directly in
+`VISUALIZATION_PIPELINE_SPEC.md`, not yet tuned against a real CryoCloud
+pod's memory/latency profile.
+
+Errors match `/api/preflight`: `422` for an unsupported extension or an
+undefined/unrecognized CRS, `400` for a missing/corrupted file.
 
 ## `POST /api/origin-elevation`
 

@@ -1,10 +1,11 @@
 """
 API layer for the GIA Modeling Tool.
 
-One endpoint, POST /process, wraps app.process_dem with:
+One endpoint, POST /process, wraps backend.app.process_dem with:
   - multipart file upload for the DEM
   - three explicit, unambiguous origin input modes (origin_mode /
-    origin_value / origin_epsg -- see api/crs.py and api/README.md),
+    origin_value / origin_epsg -- see api/crs.py and
+    documentation/api-README.md),
     normalized to EPSG:4326, plus a geodesic plausibility check against
     the raster's own extent that applies underneath all three
   - automatic reprojection of non-geographic input rasters to EPSG:4326,
@@ -17,20 +18,25 @@ Run locally with:
     uvicorn api.main:app --reload
 from the repository root.
 """
+import io
 import os
 import sys
 import warnings
+import zipfile
 
+import geopandas as gpd
+import rasterio.errors
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
+from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-# Make the repo root (where app.py / main.py live) importable regardless of
-# where uvicorn is launched from.
+# Make the repo root (parent of the backend/ package) importable regardless
+# of where uvicorn is launched from.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import process_dem  # noqa: E402  (import after sys.path fixup, see above)
-from main import raster_io_check, check_available_ram_mb  # noqa: E402
+from backend.app import process_dem  # noqa: E402  (import after sys.path fixup, see above)
+from backend.main import raster_io_check, check_available_ram_mb  # noqa: E402
 
 from api.crs import (  # noqa: E402
     normalize_origin_to_wgs84,
@@ -45,6 +51,7 @@ from api.crs import (  # noqa: E402
     InvalidOriginError,
 )
 from api.storage import create_job_workspace, cleanup_job_workspace, job_workspace  # noqa: E402
+from api.raster_preview import build_preview_geotiff_bytes  # noqa: E402
 
 app = FastAPI(title="GIA Modeling Tool API")
 
@@ -222,7 +229,16 @@ async def process(
     if backend_warnings:
         # Surface backend UserWarnings (e.g. origin outside raster extent,
         # missing nodata value) to the client rather than only to server logs.
-        headers["X-Processing-Warnings"] = " | ".join(backend_warnings)[:2000]
+        # `simplefilter("always")` above records every warning category, not
+        # just this codebase's own UserWarnings -- a library-internal
+        # DeprecationWarning can slip in with embedded newlines in its
+        # message, which are invalid in an HTTP header value and crash the
+        # response at send time (only visible over a real ASGI server, not
+        # the in-process calls the test suite uses). Collapse whitespace
+        # defensively so header construction never depends on what a given
+        # warning happens to say.
+        sanitized_warnings = [" ".join(w.split()) for w in backend_warnings]
+        headers["X-Processing-Warnings"] = " | ".join(sanitized_warnings)[:2000]
     if sampled_elevation is not None:
         headers["X-Target-Elevation-Source"] = "dem"
         if abs(sampled_elevation - target_elevation) > 1e-6:
@@ -233,10 +249,27 @@ async def process(
     else:
         headers["X-Target-Elevation-Source"] = "manual"
 
-    return FileResponse(
-        output_path,
-        media_type="application/geopackage+sqlite3",
-        filename="strandlines.gpkg",
+    # --- Bundle strandlines.gpkg alongside two small, cheap-to-derive
+    # preview artifacts for the map's result-preview panel (see
+    # documentation/VISUALIZATION_PIPELINE_SPEC.md Stage 3). Both are read back from the
+    # .gpkg process_dem() just finished writing -- a small vector-layer read
+    # and a decimated raster-table read, not a re-run of tilt/contour
+    # computation -- rather than threading extra return values through
+    # process_dem() itself, which stays untouched (see CLAUDE.md). ---
+    contour_gdf = gpd.read_file(output_path, layer="strandline_contour")
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(output_path, arcname="strandlines.gpkg")
+        zf.writestr("contour.geojson", contour_gdf.to_json())
+        if include_dem:
+            preview_bytes = build_preview_geotiff_bytes(f"GPKG:{output_path}:modified_dem")
+            zf.writestr("preview_tilted.tif", preview_bytes)
+
+    headers["Content-Disposition"] = 'attachment; filename="results.zip"'
+
+    return Response(
+        content=zip_buffer.getvalue(),
+        media_type="application/zip",
         headers=headers,
         background=background_tasks,
     )
@@ -295,6 +328,7 @@ async def preflight(
         free_ram = check_available_ram_mb()
         io_check = raster_io_check(input_path, free_ram)
         crs = get_raster_crs(input_path)
+        bounds_wgs84 = get_raster_bounds_wgs84(input_path)
     except FileNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except IOError as e:
@@ -304,11 +338,120 @@ async def preflight(
 
     return {
         "crs": crs,
+        "bounds_wgs84": list(bounds_wgs84),
         "band_count": io_check["band_count"],
         "use_windowed_io": io_check["use_windowed_io"],
         "needs_casting": io_check["needs_casting"],
         "peak_ram_mb": io_check["peak_ram_mb"],
     }
+
+
+@app.post("/api/raster-preview")
+async def raster_preview(
+    background_tasks: BackgroundTasks,
+    dem_file: UploadFile | None = File(None, description="Input DEM as a GeoTIFF (.tif/.tiff)"),
+    file_path: str | None = Form(None, description="Server-side path to a GeoTIFF on the same pod filesystem"),
+):
+    # --- Same dual file-resolution as /api/preflight. Fires once after
+    # preflight succeeds (not on every keystroke) -- decimation keeps this
+    # cheap regardless of the source file's actual size. ---
+    if (dem_file is None) == (file_path is None):
+        raise HTTPException(
+            status_code=422,
+            detail="Provide exactly one of dem_file or file_path.",
+        )
+
+    filename = dem_file.filename if dem_file is not None else file_path
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported file type '{ext}'. Expected one of {sorted(ALLOWED_EXTENSIONS)}.",
+        )
+
+    if dem_file is not None:
+        job_dir = create_job_workspace()
+        background_tasks.add_task(cleanup_job_workspace, job_dir)
+
+        input_path = os.path.join(job_dir, f"input{ext}")
+        try:
+            size = 0
+            with open(input_path, "wb") as f:
+                while chunk := await dem_file.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_UPLOAD_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"Upload exceeds the {MAX_UPLOAD_BYTES // (1024**3)} GB limit.",
+                        )
+                    f.write(chunk)
+        finally:
+            await dem_file.close()
+    else:
+        if not os.path.isfile(file_path):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not find a file at '{file_path}'.",
+            )
+        input_path = file_path
+
+    try:
+        preview_bytes = build_preview_geotiff_bytes(input_path)
+    except InvalidCRSError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except rasterio.errors.RasterioIOError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return Response(content=preview_bytes, media_type="image/tiff", background=background_tasks)
+
+
+class ResolvePointRequest(BaseModel):
+    origin_mode: str
+    origin_value: str
+    origin_epsg: str | None = None
+    native_crs: str | None = None
+
+
+@app.post("/api/resolve-point")
+async def resolve_point(body: ResolvePointRequest):
+    # --- Cheap coordinate resolution, no file I/O: wraps the same parsing
+    # functions /api/process uses for the two origin modes that don't
+    # depend on the raster itself. 'match_raster' is also supported here
+    # (unlike at the top of /api/process, where it's deferred until the
+    # file is on disk) because the client already has the raster's CRS
+    # cached from /api/preflight's response -- no raster re-read needed for
+    # a live map preview on every coordinate-field blur. ---
+    if body.origin_mode not in ORIGIN_MODES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"origin_mode must be one of {sorted(ORIGIN_MODES)}, got '{body.origin_mode}'.",
+        )
+
+    try:
+        if body.origin_mode == "decimal_degrees":
+            lon, lat = parse_decimal_degrees_hemisphere(body.origin_value)
+        elif body.origin_mode == "epsg":
+            if not body.origin_epsg:
+                raise HTTPException(
+                    status_code=422,
+                    detail="origin_epsg is required when origin_mode is 'epsg'.",
+                )
+            x, y = parse_xy_pair(body.origin_value)
+            lon, lat = normalize_origin_to_wgs84(x, y, body.origin_epsg)
+        else:  # match_raster
+            if not body.native_crs:
+                raise HTTPException(
+                    status_code=422,
+                    detail="native_crs is required when origin_mode is 'match_raster'.",
+                )
+            x, y = parse_xy_pair(body.origin_value)
+            lon, lat = normalize_origin_to_wgs84(x, y, body.native_crs)
+    except (InvalidCRSError, InvalidOriginError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return {"lon": lon, "lat": lat}
 
 
 @app.post("/api/origin-elevation")

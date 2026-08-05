@@ -15,7 +15,7 @@ import pytest
 import rasterio
 from rasterio.transform import from_origin
 
-from main import write_dem_to_gpkg, write_dem_to_gpkg_windowed
+from backend.main import write_dem_to_gpkg, write_dem_to_gpkg_windowed
 
 GRID = 40
 PIXEL = 0.005

@@ -3,7 +3,8 @@ Smoke test for the /process endpoint's origin-mode handling.
 
 Calls api.main.process directly (in-process, as a plain coroutine) rather
 than over real HTTP, so this has no extra runtime dependency beyond what
-requirements-api.txt already installs -- no test client, no live server.
+setup/requirements-api.txt already installs -- no test client, no live
+server.
 
 Run with:
     python api/smoke_test.py

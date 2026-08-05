@@ -7,9 +7,22 @@ const defaultState = {
   demPath: '',
   preflightStatus: 'idle', // idle | checking | valid | invalid
   preflightMessage: '',
+  // Structured preflight results, cached client-side so later steps (the
+  // map's input preview, /api/resolve-point's match_raster mode) don't need
+  // to re-read the raster -- see documentation/VISUALIZATION_PIPELINE_SPEC.md Stage 1.
+  boundsWgs84: null, // [west, south, east, north] WGS84, from /api/preflight
+  demCrs: null, // e.g. "EPSG:32612", from /api/preflight
+  // Parsed georaster object from /api/raster-preview (georeferenced WGS84
+  // preview of the uploaded DEM) -- holds typed arrays, never persisted.
+  rasterPreviewGeoraster: null,
   originMode: 'decimal_degrees', // match_raster | decimal_degrees | epsg
   originValue: '',
   originEpsg: '',
+  // Preview-only state for the /api/resolve-point call, driven by the same
+  // coordinate-field blur that drives elevationCheckStatus below (see
+  // CoordinateSteps.jsx). Feeds the map's origin marker + azimuth line.
+  resolveOriginStatus: 'idle', // idle | checking | resolved | error
+  resolvedOrigin: null, // [lon, lat]
   tiltAzimuth: '',
   tiltFactor: '',
   targetElevation: '',
@@ -25,7 +38,7 @@ const defaultState = {
 
 // Carry-forward: silently restores the last run's values on load. This is
 // separate from the presets mechanism (which is explicit/named) — don't
-// merge the two. See GIA_Tool_Penpot_Spec.md.
+// merge the two. See documentation/GIA_Tool_Penpot_Spec.md.
 function loadCarriedForwardState() {
   try {
     const saved = window.localStorage.getItem(STORAGE_KEY)
@@ -44,8 +57,22 @@ export function ProcessingProvider({ children }) {
     setFormState((prev) => {
       const next = { ...prev, ...patch }
       // Persist only the fields worth carrying forward — not file objects
-      // or transient preflight/elevation-check status.
-      const { demFile, preflightStatus, preflightMessage, elevationCheckStatus, elevationCheckValue, ...persisted } = next
+      // or transient preflight/elevation-check/resolve-point status (the
+      // latter three are re-derived from a fresh preflight/blur, not safe
+      // to carry forward stale across a reload).
+      const {
+        demFile,
+        preflightStatus,
+        preflightMessage,
+        boundsWgs84,
+        demCrs,
+        rasterPreviewGeoraster,
+        elevationCheckStatus,
+        elevationCheckValue,
+        resolveOriginStatus,
+        resolvedOrigin,
+        ...persisted
+      } = next
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted))
       return next
     })

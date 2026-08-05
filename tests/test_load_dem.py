@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import rasterio
 
-from main import load_DEM, raster_io_check
+from backend.main import load_DEM, raster_io_check
 
 
 def _io_flags(path):

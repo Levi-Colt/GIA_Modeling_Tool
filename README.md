@@ -10,7 +10,7 @@ Given a DEM (Digital Elevation Model) GeoTIFF, an origin point, a tilt direction
 4. **Writes the result to a GeoPackage** (`write_dem_to_gpkg` + GeoPandas), optionally embedding the modified DEM as a raster layer alongside the strandline contour vector layer, so both ship as a single `.gpkg` file.
 
 ### Standard vs. windowed pipeline
-`app.py`'s `process_dem` is the orchestration entry point. It runs the pre-flight RAM check and routes to one of two pipelines:
+`backend/app.py`'s `process_dem` is the orchestration entry point. It runs the pre-flight RAM check and routes to one of two pipelines:
 
 - **Standard (in-memory) pipeline** — `load_DEM` → `calculate_tilt` → `extract_strandline_contours`. Used when the DEM comfortably fits within a safe fraction of available RAM.
 - **Windowed (streamed) pipeline** — `tilt_DEM_windowed` → `extract_strandline_contours_windowed`. Used for DEMs too large to load in one pass; both functions process the raster in fixed-size tiles (`tile_size`), writing/reading incrementally rather than holding the whole array in memory at once.
@@ -19,11 +19,11 @@ Both pipelines converge on the same output step, and are verified against each o
 
 ## Installation
 ```bash
-pip install -r requirements.txt
+pip install -r setup/requirements.txt
 ```
-For running the test suite, install the dev dependencies instead (this also installs everything in `requirements.txt`):
+For running the test suite, install the dev dependencies instead (this also installs everything in `setup/requirements.txt`):
 ```bash
-pip install -r requirements-dev.txt
+pip install -r setup/requirements-dev.txt
 ```
 
 ## Running in CryoCloud
@@ -34,7 +34,7 @@ pod, exposed via `jupyter-server-proxy`. This is lab-only, clone-and-build
 for now -- no shared/org-wide CryoCloud image, no admin registration needed.
 
 ```bash
-conda env create -f environment.yml
+conda env create -f setup/environment.yml
 conda activate gia-modeling-tool
 cd frontend && npm install && npm run build && cd ..
 uvicorn api.main:app --host 0.0.0.0 --port <PORT>
@@ -52,8 +52,9 @@ normal operation), point `GIA_STORAGE_DIR` at a directory there before
 starting uvicorn.
 
 ## Usage
+Run from the repository root (so `backend/` resolves as an importable package):
 ```python
-from app import process_dem
+from backend.app import process_dem
 
 process_dem(
     file_path="test_data/my_dem.tif",
@@ -67,11 +68,13 @@ process_dem(
 ```
 
 ## Testing
-The test suite covers every function in `main.py` individually, the standard/windowed pipelines' equivalence, and `app.py`'s orchestration layer end-to-end, using synthetic in-memory-generated GeoTIFFs rather than real DEM data.
+The test suite covers every function in `backend/main.py` individually, the standard/windowed pipelines' equivalence, and `backend/app.py`'s orchestration layer end-to-end, using synthetic in-memory-generated GeoTIFFs rather than real DEM data.
 
+`pytest.ini` lives in `setup/`, not the repo root, so it needs to be pointed
+to explicitly -- plain `pytest` won't pick it up:
 ```bash
-pytest              # run the full suite
-pytest -m cryocloud  # also run tests that only meaningfully validate real system RAM behavior inside a CryoCloud container
+pytest -c setup/pytest.ini --rootdir=.              # run the full suite
+pytest -c setup/pytest.ini --rootdir=. -m cryocloud  # also run tests that only meaningfully validate real system RAM behavior inside a CryoCloud container
 ```
 
 ## Known limitations
@@ -103,4 +106,7 @@ A few behaviors are intentional trade-offs or documented gaps rather than bugs, 
 * [Vite](https://vite.dev/) - Dev server (with API proxying) and production build tooling for the frontend.
 * [Tailwind CSS](https://tailwindcss.com/) - Utility-first styling used throughout the frontend components.
 * [Leaflet](https://leafletjs.com/) - Interactive map rendering for the input/result preview panel.
-* [georaster-layer-for-leaflet](https://github.com/GeoTIFF/georaster-layer-for-leaflet) - Renders GeoTIFF rasters (the tilted DEM result) directly as a Leaflet layer in-browser.
+* [georaster](https://github.com/GeoTIFF/georaster) - Parses GeoTIFF bytes returned by `/api/raster-preview` and `/api/process` into an in-browser raster object.
+* [georaster-layer-for-leaflet](https://github.com/GeoTIFF/georaster-layer-for-leaflet) - Renders those parsed rasters (the input DEM preview and the tilted DEM result) directly as a Leaflet layer in-browser.
+* [Turf.js](https://turfjs.org/) (`@turf/destination`, `@turf/bbox`) - Geodesic point projection for the client-side tilt-azimuth line, and bounding-box math for fitting the map view to the result contour.
+* [fflate](https://github.com/101arrowz/fflate) - Client-side unzip of `/api/process`'s bundled response (strandline `.gpkg` + contour GeoJSON + optional tilted-DEM preview).

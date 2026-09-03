@@ -35,6 +35,11 @@ def test_valid_raster_returns_crs_and_bounds(flat_dem_path):
     assert east == pytest.approx(-104.9)
     assert south == pytest.approx(44.9)
 
+    # Corner-to-corner diagonal of a ~0.1deg x 0.1deg box at this latitude is
+    # a little under 16km -- just confirming it's a small positive number in
+    # the right ballpark, not pinning down an exact geodesic figure.
+    assert 0 < result["diagonal_km"] < 20
+
 
 def test_bounds_wgs84_reprojected_for_projected_crs(tmp_path, raster_writer):
     import numpy as np
@@ -53,6 +58,12 @@ def test_bounds_wgs84_reprojected_for_projected_crs(tmp_path, raster_writer):
     assert -90.0 <= south <= 90.0
     assert west < east
     assert south < north
+
+    # A 10x10, 30m-pixel UTM raster is ~300m x 300m -- diagonal_km must have
+    # gone through get_raster_diagonal_km's CRS-aware reprojection path
+    # (raw UTM meters fed straight into Geod.inv would be nonsense, likely
+    # hundreds of thousands of "km").
+    assert 0 < result["diagonal_km"] < 1.0
 
 
 def test_missing_both_file_inputs_raises_422():

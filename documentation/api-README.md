@@ -56,6 +56,7 @@ pipeline. Meant to fire on file drop or path entry/blur.
 {
   "crs": "EPSG:32612",
   "bounds_wgs84": [-110.62, 45.18, -110.48, 45.31],
+  "diagonal_km": 12.3,
   "band_count": 1,
   "use_windowed_io": false,
   "needs_casting": false,
@@ -66,6 +67,22 @@ pipeline. Meant to fire on file drop or path entry/blur.
 extent reprojected to EPSG:4326 (via `get_raster_bounds_wgs84`, the same
 helper `/api/process` uses), for the frontend's map panel to draw the input
 extent and `fitBounds` to it before any raster pixels have loaded.
+
+`diagonal_km` is the raster's own corner-to-corner geodesic distance (via
+`get_raster_diagonal_km`, reprojection-aware the same way `bounds_wgs84` is),
+informational only -- it mirrors the routing decision `calculate_tilt` makes
+internally on the backend to decide between a single-point flat-plane
+calibration and a large-extent (latitude-corrected) one, recomputed
+independently once the raster is guaranteed WGS84 rather than trusted from
+this pre-reprojection value. See
+`documentation/PERFORMANCE_OPTIMIZATION_SPEC.md` Fix 1c.
+
+`peak_ram_mb` also no longer implicitly under-counts `calculate_tilt`'s own
+memory cost the way it used to -- see `PERFORMANCE_OPTIMIZATION_SPEC.md`'s
+"core problem" section. `use_windowed_io`'s routing decision is unchanged by
+that fix (it's still driven purely by the raw array + cast, same as before);
+what changed is that the in-memory branch is no longer at risk of blowing far
+past this estimate once it's actually running.
 
 ## `POST /api/resolve-point`
 

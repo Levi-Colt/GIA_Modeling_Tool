@@ -45,6 +45,7 @@ from api.crs import (  # noqa: E402
     parse_decimal_degrees_hemisphere,
     get_raster_crs,
     get_raster_bounds_wgs84,
+    get_raster_diagonal_km,
     check_origin_within_threshold,
     sample_elevation_at_point,
     InvalidCRSError,
@@ -258,7 +259,11 @@ async def process(
     # process_dem() itself, which stays untouched (see CLAUDE.md). ---
     contour_gdf = gpd.read_file(output_path, layer="strandline_contour")
     zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+    # ZIP_STORED (no compression), not ZIP_DEFLATED: measured on a real 440MB
+    # output, deflate spent ~19s to recover only a 5% size reduction --
+    # elevation rasters and WKB geometry don't compress well. See
+    # documentation/PERFORMANCE_OPTIMIZATION_SPEC.md Fix 3.
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_STORED) as zf:
         zf.write(output_path, arcname="strandlines.gpkg")
         zf.writestr("contour.geojson", contour_gdf.to_json())
         if include_dem:
@@ -329,6 +334,7 @@ async def preflight(
         io_check = raster_io_check(input_path, free_ram)
         crs = get_raster_crs(input_path)
         bounds_wgs84 = get_raster_bounds_wgs84(input_path)
+        diagonal_km = get_raster_diagonal_km(input_path)
     except FileNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except IOError as e:
@@ -339,6 +345,7 @@ async def preflight(
     return {
         "crs": crs,
         "bounds_wgs84": list(bounds_wgs84),
+        "diagonal_km": diagonal_km,
         "band_count": io_check["band_count"],
         "use_windowed_io": io_check["use_windowed_io"],
         "needs_casting": io_check["needs_casting"],

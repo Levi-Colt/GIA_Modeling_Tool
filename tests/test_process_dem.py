@@ -170,6 +170,52 @@ def tempfile_dir():
     return tempfile.gettempdir()
 
 
+# --- Fix 3 contour cleanup (documentation/PERFORMANCE_OPTIMIZATION_SPEC.md) ---
+
+def test_contours_below_min_vertex_count_are_dropped(tmp_path, monkeypatch):
+    # The sloped-dem contour at this grid size has only a handful of
+    # vertices; raising the threshold above that count should make the
+    # cleanup step drop it entirely, confirming the filter is actually wired
+    # into process_dem (not just defined and unused).
+    monkeypatch.setattr(app, "MIN_CONTOUR_VERTICES", 1000)
+    dem_path, _ = _sloped_dem(tmp_path)
+    output_path = str(tmp_path / "output.gpkg")
+
+    app.process_dem(dem_path, ORIGIN, 90, 0.0, 450, output_path, include_dem=False)
+
+    gdf = gpd.read_file(output_path, layer="strandline_contour")
+    assert len(gdf) == 0
+
+
+def test_default_min_vertex_count_does_not_drop_a_normal_contour(tmp_path):
+    dem_path, _ = _sloped_dem(tmp_path)
+    output_path = str(tmp_path / "output.gpkg")
+
+    app.process_dem(dem_path, ORIGIN, 90, 0.0, 450, output_path, include_dem=False)
+
+    gdf = gpd.read_file(output_path, layer="strandline_contour")
+    assert len(gdf) >= 1
+
+
+def test_contour_geometry_is_simplified(tmp_path, monkeypatch):
+    # Disable simplification and compare against the default: the default
+    # run's geometry should have no more vertices than the unsimplified one
+    # (simplify never adds points), confirming it's actually applied.
+    dem_path, _ = _sloped_dem(tmp_path, grid=30, pixel=0.001)
+
+    unsimplified_path = str(tmp_path / "unsimplified.gpkg")
+    monkeypatch.setattr(app, "CONTOUR_SIMPLIFY_TOLERANCE_DEG", 0.0)
+    app.process_dem(dem_path, ORIGIN, 90, 0.0, 450, unsimplified_path, include_dem=False)
+    unsimplified_gdf = gpd.read_file(unsimplified_path, layer="strandline_contour")
+
+    monkeypatch.undo()
+    simplified_path = str(tmp_path / "simplified.gpkg")
+    app.process_dem(dem_path, ORIGIN, 90, 0.0, 450, simplified_path, include_dem=False)
+    simplified_gdf = gpd.read_file(simplified_path, layer="strandline_contour")
+
+    assert len(simplified_gdf.geometry.iloc[0].coords) <= len(unsimplified_gdf.geometry.iloc[0].coords)
+
+
 # --- orchestration-level fixes ---
 
 def test_creates_missing_output_directory(tmp_path):

@@ -84,6 +84,14 @@ def test_exact_threshold_boundary_does_not_trigger_windowed_io(flat_dem_path):
     assert result["use_windowed_io"] is False
 
 
+def test_returns_width_and_height(int16_dem_path):
+    # Needed by largest_safe_tile_size (see PERFORMANCE_OPTIMIZATION_SPEC.md
+    # Fix 2) to size tile_size/chunk_rows without a second file open.
+    result = raster_io_check(int16_dem_path, available_ram_mb=1000)
+    assert result["width"] == 10
+    assert result["height"] == 10
+
+
 def test_directory_path_raises_io_error(tmp_path):
     # os.path.exists() is True for directories too, so this needs to fall
     # through to rasterio.open() and be converted to IOError, not silently

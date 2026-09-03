@@ -185,6 +185,26 @@ def get_raster_bounds_wgs84(path: str) -> tuple[float, float, float, float]:
         return array_bounds(height, width, transform)
 
 
+def get_raster_diagonal_km(path: str) -> float:
+    """
+    Corner-to-corner geodesic distance across the raster's own extent, in
+    km, reprojecting to WGS84 first via get_raster_bounds_wgs84 -- so this
+    is correct regardless of the raster's own native CRS. Contrast with
+    backend.main's internal diagonal helper, which assumes its input is
+    already WGS84 (a safe assumption there, never here -- see that module's
+    own docstring).
+
+    Exposed via /api/preflight purely for frontend display
+    (documentation/PERFORMANCE_OPTIMIZATION_SPEC.md Fix 1c); calculate_tilt's
+    own calibration decision recomputes this independently once the raster
+    is guaranteed WGS84, rather than trusting this pre-reprojection value.
+    """
+    west, south, east, north = get_raster_bounds_wgs84(path)
+    geod = Geod(ellps="WGS84")
+    _, _, dist_m = geod.inv(west, south, east, north)
+    return dist_m / 1000.0
+
+
 def check_origin_within_threshold(
     origin_lon: float,
     origin_lat: float,

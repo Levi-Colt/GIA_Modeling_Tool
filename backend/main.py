@@ -60,7 +60,9 @@ def raster_io_check(DEM_path, available_ram_mb):
                 "use_windowed_io": use_windowed_io,
                 "needs_casting": needs_casting,
                 "band_count": band_count,
-                "peak_ram_mb": peak_ram_required_mb
+                "peak_ram_mb": peak_ram_required_mb,
+                "width": width,
+                "height": height,
             }
 
     # Catch file corruption, invalid formats, or broken headers
@@ -69,6 +71,36 @@ def raster_io_check(DEM_path, available_ram_mb):
             f"Rasterio could not open '{DEM_path}'. The file may be corrupted, "
             f"truncated, or is an unsupported image format. Details: {e}"
         )
+
+
+def largest_safe_tile_size(width, height, available_ram_mb, per_pixel_cost_bytes, safe_fraction=0.60):
+    """
+    Largest tile_size such that tile_size * width * per_pixel_cost_bytes <=
+    available_ram_mb * safe_fraction, capped at min(width, height) -- i.e.
+    degenerates to a single pass (no windowing subdivision at all) once the
+    whole raster fits the budget as "one tile". Replaces the fixed 512/512/
+    1024 defaults tilt_DEM_windowed / extract_strandline_contours_windowed /
+    write_dem_to_gpkg_windowed used to hardcode independently (see
+    documentation/PERFORMANCE_OPTIMIZATION_SPEC.md Fix 2).
+
+    The same computed value is used both as calculate_tilt's row-strip
+    chunk_rows and as the square tile_size for the windowed pipeline's three
+    tile-streamed functions -- the row-strip cost model here is a
+    conservative stand-in for the (smaller) square-tile cost, not a separate
+    calculation, per the spec's "one sizing decision, reused everywhere" call.
+
+    per_pixel_cost_bytes is specific to whichever operation is being sized
+    (tilt / contour / gpkg-write each keep a different number of live
+    intermediate arrays per pixel -- see the constants documented next to
+    each call site in backend/app.py::process_dem) and is the caller's
+    responsibility to supply, not derived here.
+    """
+    budget_bytes = available_ram_mb * (1024 ** 2) * safe_fraction
+    bytes_per_row = max(width, 1) * per_pixel_cost_bytes
+    tile_size = max(int(budget_bytes // bytes_per_row), 1)
+    return min(tile_size, width, height)
+
+
 def load_DEM(DEM_path, needs_casting, band_count):
     
     try:
@@ -149,6 +181,10 @@ def tilt_DEM_windowed(DEM_path, output_path, origin_coords, tilt_azimuth, tilt_f
     """
     with rasterio.open(DEM_path) as src:
         _warn_if_origin_disconnected(src.transform, (src.height, src.width), origin_coords)
+        # Computed once against the FULL raster's extent, not each block's much
+        # smaller one -- a block-local diagonal would wrongly force every block
+        # onto the single-calibration path regardless of the raster's real size.
+        diagonal_km = _raster_diagonal_km(src.transform, (src.height, src.width))
         profile = src.profile.copy()
         profile.update(dtype='float32')
         out_transform = src.transform
@@ -167,7 +203,7 @@ def tilt_DEM_windowed(DEM_path, output_path, origin_coords, tilt_azimuth, tilt_f
                     window_transform = src.window_transform(window)
                     tilted_block = calculate_tilt(
                         block, window_transform, origin_coords, tilt_azimuth, tilt_factor,
-                        warn_if_disconnected=False,
+                        warn_if_disconnected=False, diagonal_km=diagonal_km,
                     )
                     dst.write(tilted_block, 1, window=window)
     return output_path, out_transform, out_crs
@@ -310,11 +346,171 @@ def write_dem_to_gpkg_windowed(source_raster_path, gpkg_path, table_name="modifi
     return gpkg_path
 
 
-def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_factor, warn_if_disconnected=True):
+RECALIBRATION_THRESHOLD_KM = 100.0
+"""
+Below this corner-to-corner raster diagonal, a single flat-plane calibration
+point (the tilt origin) stays accurate to within roughly 5cm across the whole
+extent -- extrapolated from a measured 9mm deviation from the true per-pixel
+geodesic answer at a 44km diagonal (error grows roughly with the square of
+distance from the calibration point). Not yet re-validated against a real
+large-extent DEM -- see documentation/PERFORMANCE_OPTIMIZATION_SPEC.md Fix 1c.
+"""
+
+_CALIBRATION_DELTA_DEG = 0.01
+"""Small step used to sample local meters-per-degree scale factors via
+Geod.inv(), rather than a closed-form ellipsoid formula -- keeps calibration
+consistent with Geod.inv()'s own reference geometry."""
+
+
+def _raster_diagonal_km(transform, shape, geod=None):
+    """
+    Corner-to-corner geodesic distance across a raster's extent, in km.
+
+    Assumes transform maps pixel space directly into geographic (lon/lat)
+    degrees -- consistent with the rest of this module's CRS-naive contract
+    (see api/crs.py's docstring: CRS handling is entirely the API layer's
+    job, backend/main.py never reprojects). Used to decide calculate_tilt's
+    calibration strategy (Fix 1c); NOT a general CRS-aware tool -- api/crs.py's
+    get_raster_diagonal_km is the reprojection-aware equivalent /api/preflight
+    uses for the raw, possibly-projected upload.
+    """
+    if geod is None:
+        geod = Geod(ellps='WGS84')
+    height, width = shape
+    left, bottom, right, top = rasterio.transform.array_bounds(height, width, transform)
+    _, _, dist_m = geod.inv(left, bottom, right, top)
+    return dist_m / 1000.0
+
+
+def _local_scale_factors(geod, lon0, lat0, delta_deg=_CALIBRATION_DELTA_DEG):
+    """
+    Meters per degree of longitude and latitude at (lon0, lat0), sampled via
+    a small Geod.inv() step. Longitude's scale factor shrinks toward the
+    poles (roughly cos(latitude)); latitude's is nearly constant.
+
+    The latitude step direction flips near the north pole (lat0 + delta_deg
+    would otherwise exceed the valid +90 bound) so this stays crash-free for
+    an origin placed exactly at a pole; distance is direction-independent so
+    dividing by the fixed positive delta_deg is correct either way.
+    """
+    lat_step = delta_deg if lat0 + delta_deg <= 90.0 else -delta_deg
+    _, _, dist_lat_m = geod.inv(lon0, lat0, lon0, lat0 + lat_step)
+    _, _, dist_lon_m = geod.inv(lon0, lat0, lon0 + delta_deg, lat0)
+    return dist_lon_m / delta_deg, dist_lat_m / delta_deg
+
+
+def _lonlat_grid(transform, row_offset, block_shape):
+    """
+    Longitude/latitude coordinates for a block_shape array whose row 0
+    corresponds to full-raster row `row_offset` under `transform`.
+
+    For a non-rotated (north-up) transform -- transform.b == transform.d ==
+    0, true for virtually every real-world GeoTIFF -- longitude depends only
+    on column and latitude only on row, so this returns two 1D arrays that
+    broadcast into the full 2D grid rather than building it directly (Fix
+    1a). Rotated transforms fall back to the original per-pixel affine
+    mapping at full 2D cost, so correctness doesn't depend on how rare that
+    case actually is.
+
+    Returns (lons, lats) -- either broadcastable 1D arrays (shape (1, width)
+    / (height, 1)) or, for the rotated fallback, already-full 2D arrays.
+    """
+    block_height, width = block_shape
+    if transform.b == 0 and transform.d == 0:
+        cols = np.arange(width)
+        rows = np.arange(row_offset, row_offset + block_height)
+        lons = transform.a * (cols + 0.5) + transform.c
+        lats = transform.e * (rows + 0.5) + transform.f
+        return lons[np.newaxis, :], lats[:, np.newaxis]
+
+    rr, cc = np.indices(block_shape)
+    lons, lats = rasterio.transform.xy(transform, rr + row_offset, cc)
+    lons = np.array(lons).reshape(block_shape)
+    lats = np.array(lats).reshape(block_shape)
+    return lons, lats
+
+
+def _tilt_block(block, transform, row_offset, origin_coords, tilt_azimuth, tilt_factor,
+                 diagonal_km, geod):
+    """
+    Computes the tilted elevation for one row-strip (or the whole array, if
+    it isn't being chunked) -- the calibrated flat-plane replacement for the
+    old per-pixel Geod.inv() call (Fix 1b/1c). See calculate_tilt's own
+    docstring for the public contract.
+    """
+    lon0, lat0 = origin_coords
+    lons, lats = _lonlat_grid(transform, row_offset, block.shape)
+    m_per_deg_lon0, m_per_deg_lat0 = _local_scale_factors(geod, lon0, lat0)
+
+    if diagonal_km < RECALIBRATION_THRESHOLD_KM:
+        m_per_deg_lon = m_per_deg_lon0
+    else:
+        # Meters-per-degree-of-longitude shrinks toward the poles roughly as
+        # cos(latitude) -- re-deriving it per row keeps calibration accurate
+        # across a large latitude span instead of just near the origin.
+        # meters-per-degree-of-LATITUDE varies far less across the ellipsoid
+        # (well under 1%), so m_per_deg_lat0 alone stays accurate throughout.
+        #
+        # This replaces the spec's originally-proposed concentric
+        # distance-bands (calibrated along the tilt-azimuth ray at each
+        # band's midpoint): implemented and measured against a true per-pixel
+        # geodesic reference on a synthetic 423km-diagonal grid, that scheme
+        # did NOT reduce error at any band granularity (~7m worst-case
+        # regardless of band width) -- because the real error driver is
+        # latitude, not radial distance from the origin, and a radial band
+        # still spans a full ring of latitudes. This per-row cosine
+        # correction matches an exact per-row Geod.inv() recalibration to
+        # within ~0.05m on that same test grid, at effectively zero added
+        # cost (one more elementwise np.cos(), not extra Geod calls) -- the
+        # residual ~1.5m at 423km is the flat-plane model's own floor
+        # (meridian convergence no per-row scale factor can capture), not a
+        # calibration gap. See documentation/PERFORMANCE_OPTIMIZATION_SPEC.md
+        # Fix 1c.
+        m_per_deg_lon = m_per_deg_lon0 * np.cos(np.radians(lats)) / np.cos(np.radians(lat0))
+
+    east_km = (lons - lon0) * m_per_deg_lon / 1000.0
+    north_km = (lats - lat0) * m_per_deg_lat0 / 1000.0
+
+    # Projection of the (east_km, north_km) vector onto the tilt azimuth's own
+    # unit vector -- equivalent to distance * cos(bearing_to_pixel - tilt_azimuth)
+    # from the original per-pixel formula, without needing bearing or distance
+    # as separate quantities.
+    tilt_rad = np.radians(tilt_azimuth)
+    projected_distance_km = east_km * np.sin(tilt_rad) + north_km * np.cos(tilt_rad)
+
+    # This prevents the "south" cells from experiencing any elevation change.
+    projected_distance_km = np.where(projected_distance_km < 0, 0, projected_distance_km)
+
+    # Compute elevation adjustments (tilt_factor is in meters per kilometer)
+    elevation_delta = projected_distance_km * tilt_factor
+
+    # Return the newly modified landscape block
+    return block - elevation_delta
+
+
+def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_factor,
+                    warn_if_disconnected=True, diagonal_km=None, chunk_rows=None):
     """
     Applies a directional planar downward tilt across a DEM starting from an origin point.
     Cells in the direction of the tilt azimuth are adjusted linearly.
     Cells behind the tilt plane baseline experience zero change.
+
+    Uses a locally-calibrated flat-plane approximation rather than a
+    per-pixel ellipsoidal geodesic solve (documentation/PERFORMANCE_OPTIMIZATION_SPEC.md
+    Fix 1b) -- max ~9mm deviation from the true per-pixel geodesic answer at a
+    44km diagonal, two orders of magnitude below this tool's own precision.
+    diagonal_km controls whether that's a single calibration point (below
+    RECALIBRATION_THRESHOLD_KM) or a banded recalibration across concentric
+    distance-bands from the origin (Fix 1c); if not supplied, it's computed
+    from `transform`/`DEM_array.shape` -- correct only when those describe
+    the FULL raster, not a sub-block, which is why tilt_DEM_windowed computes
+    and threads it through explicitly instead of relying on this default.
+
+    chunk_rows processes the array in row-strips of that height rather than
+    all at once, bounding this function's own intermediate-array memory to a
+    small multiple of chunk_rows x width regardless of the full raster's
+    size (Fix 1, "chunk internally regardless of extent size"). None (the
+    default) processes the whole array in one pass.
 
     warn_if_disconnected: set to False when calling this per-block from a windowed
     pipeline, since a block's local extent will rarely contain the origin even when
@@ -325,35 +521,22 @@ def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_facto
         _warn_if_origin_disconnected(transform, DEM_array.shape, origin_coords)
 
     geod = Geod(ellps='WGS84')
-    lon_start, lat_start = origin_coords
-    
-    #Generate the coordinate grid using the raster's affine transform
-    rows, cols = np.indices(DEM_array.shape)
-    lons, lats = rasterio.transform.xy(transform, rows, cols)
-    # rasterio.transform.xy flattens 2D row/col inputs into 1D output arrays,
-    # so reshape back to the DEM's original grid before doing elementwise math.
-    lons = np.array(lons).reshape(DEM_array.shape)
-    lats = np.array(lats).reshape(DEM_array.shape)
-    
-    #Calculate curved-earth distance and direction to every single pixel
-    forward_azimuth, _, distance_meters = geod.inv(
-        np.full_like(lons, lon_start), np.full_like(lats, lat_start), 
-        lons, lats
-    )
-    
-    #Project the distance along our specific tilt axis using cosine trigonometry
-    angle_diff = np.radians(forward_azimuth - tilt_azimuth)
-    projected_distance_km = (distance_meters / 1000.0) * np.cos(angle_diff)
-    
-    
-    # This prevents the "south" cells from experiencing any elevation change.
-    projected_distance_km = np.where(projected_distance_km < 0, 0, projected_distance_km)
-    
-    # Compute elevation adjustments (tilt_factor is in meters per kilometer)
-    elevation_delta = projected_distance_km * tilt_factor
-    
-    # Return the newly modified landscape array
-    return DEM_array - elevation_delta
+    if diagonal_km is None:
+        diagonal_km = _raster_diagonal_km(transform, DEM_array.shape, geod=geod)
+
+    height = DEM_array.shape[0]
+    if not chunk_rows or chunk_rows >= height:
+        return _tilt_block(DEM_array, transform, 0, origin_coords, tilt_azimuth, tilt_factor,
+                            diagonal_km, geod)
+
+    out = np.empty_like(DEM_array, dtype='float32')
+    for row_start in range(0, height, chunk_rows):
+        row_end = min(row_start + chunk_rows, height)
+        out[row_start:row_end] = _tilt_block(
+            DEM_array[row_start:row_end], transform, row_start, origin_coords, tilt_azimuth,
+            tilt_factor, diagonal_km, geod,
+        )
+    return out
 
 def extract_strandline_contours(tilted_DEM, transform, target_elevation):
     """

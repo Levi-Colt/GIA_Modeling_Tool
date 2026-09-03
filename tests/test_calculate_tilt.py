@@ -169,3 +169,78 @@ def test_origin_at_antimeridian_does_not_crash(flat_dem_array, standard_transfor
         tilted = calculate_tilt(flat_dem_array, standard_transform, (180.0, 45.0), tilt_azimuth=90, tilt_factor=5.0)
     assert tilted.shape == flat_dem_array.shape
     assert np.all(np.isfinite(tilted))
+
+
+# --- Fix 1: chunk_rows / diagonal_km (documentation/PERFORMANCE_OPTIMIZATION_SPEC.md) ---
+
+def test_chunk_rows_matches_unchunked_result(sloped_dem_array, standard_transform):
+    # Internal row-strip chunking is meant to be purely a memory-management
+    # strategy -- it should never change the result, at any chunk size.
+    unchunked = calculate_tilt(sloped_dem_array, standard_transform, CENTER, tilt_azimuth=45, tilt_factor=3.0)
+    for chunk_rows in (1, 3, 7, 10, 100):
+        chunked = calculate_tilt(
+            sloped_dem_array, standard_transform, CENTER, tilt_azimuth=45, tilt_factor=3.0,
+            chunk_rows=chunk_rows,
+        )
+        np.testing.assert_allclose(chunked, unchunked, rtol=1e-5, atol=1e-6)
+
+
+def test_chunk_rows_none_processes_whole_array_at_once(flat_dem_array, standard_transform):
+    # None (the default) shouldn't error or behave differently from omitting
+    # the argument entirely.
+    default = calculate_tilt(flat_dem_array, standard_transform, CENTER, tilt_azimuth=90, tilt_factor=5.0)
+    explicit_none = calculate_tilt(
+        flat_dem_array, standard_transform, CENTER, tilt_azimuth=90, tilt_factor=5.0, chunk_rows=None,
+    )
+    np.testing.assert_allclose(explicit_none, default)
+
+
+def test_explicit_diagonal_km_above_threshold_still_produces_finite_result(flat_dem_array, standard_transform):
+    # Forcing the large-extent (latitude-corrected) calibration path on a
+    # tiny grid should still produce a sane, finite result -- diagonal_km is
+    # just a routing decision, not something that changes based on the
+    # array's actual size.
+    tilted = calculate_tilt(
+        flat_dem_array, standard_transform, CENTER, tilt_azimuth=90, tilt_factor=5.0, diagonal_km=500.0,
+    )
+    assert tilted.shape == flat_dem_array.shape
+    assert np.all(np.isfinite(tilted))
+    assert tilted[:, -1].mean() < flat_dem_array[:, -1].mean()
+
+
+def test_large_extent_calibration_stays_close_to_true_geodesic_answer():
+    # Regression guard for the large-extent (diagonal_km >= threshold)
+    # calibration path: on a synthetic ~400km-diagonal grid, compares
+    # against a true per-pixel ellipsoidal geodesic calculation (the
+    # pre-Fix-1 approach). See PERFORMANCE_OPTIMIZATION_SPEC.md Fix 1c for
+    # the fuller investigation -- this pins down that the implemented
+    # latitude-cosine correction (not the spec's originally-proposed
+    # distance-banding, which measured no better than single-point
+    # calibration at this scale) keeps error within a few meters at ~400km,
+    # not the ~7m+ a naive single calibration point produces there.
+    import rasterio
+    from rasterio.transform import from_origin
+    from pyproj import Geod
+
+    grid = 300
+    pixel_deg = 0.01
+    transform = from_origin(-110.0, 40.0, pixel_deg, pixel_deg)
+    array = np.full((grid, grid), 1000.0, dtype="float32")
+    origin = (-110.0 + grid * pixel_deg / 2, 40.0 - grid * pixel_deg / 2)
+    tilt_azimuth, tilt_factor = 45.0, 2.0
+    lon0, lat0 = origin
+
+    tilted = calculate_tilt(array, transform, origin, tilt_azimuth, tilt_factor)
+
+    geod = Geod(ellps="WGS84")
+    rows, cols = np.indices(array.shape)
+    lons, lats = rasterio.transform.xy(transform, rows, cols)
+    lons = np.array(lons).reshape(array.shape)
+    lats = np.array(lats).reshape(array.shape)
+    fwd_az, _, dist_m = geod.inv(np.full_like(lons, lon0), np.full_like(lats, lat0), lons, lats)
+    proj_km_true = (dist_m / 1000.0) * np.cos(np.radians(fwd_az - tilt_azimuth))
+    proj_km_true = np.where(proj_km_true < 0, 0, proj_km_true)
+    true_tilted = array - proj_km_true * tilt_factor
+
+    max_diff = np.abs(tilted - true_tilted).max()
+    assert max_diff < 3.0  # meters, at a ~400km diagonal -- see docstring above

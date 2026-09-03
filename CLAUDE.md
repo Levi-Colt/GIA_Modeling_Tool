@@ -59,6 +59,26 @@
   regardless of which origin mode is used.
 - Non-geographic input rasters are reprojected to EPSG:4326 server-side before
   processing, since calculate_tilt() requires geographic degrees.
+- `calculate_tilt()` uses a locally-calibrated flat-plane approximation, not a
+  per-pixel `pyproj.Geod.inv()` ellipsoidal solve — the earlier per-pixel
+  approach built 7-8 full-size float64 coordinate/distance arrays and was the
+  real cause of a 13-minute run on a real ~11k×11k DEM that should've taken
+  under a minute (`raster_io_check`'s memory estimate never accounted for it).
+  Below `RECALIBRATION_THRESHOLD_KM` (100km) it's a single calibration point
+  at the tilt origin; above it, a per-row latitude-cosine correction (not the
+  literal concentric-distance-band scheme originally proposed — that was
+  implemented and measured first, and didn't reduce error at any band width,
+  because the real error driver is latitude, not radial distance from the
+  origin). `calculate_tilt` also chunks internally in row-strips
+  (`chunk_rows`) so its own intermediate arrays stay bounded regardless of
+  raster size, independent of `tilt_DEM_windowed`'s block-level windowing.
+  Both `chunk_rows` and the three windowed pipeline functions' `tile_size`
+  are sized once per run by `largest_safe_tile_size()`, called from
+  `process_dem`, rather than each hardcoding its own constant. See
+  `documentation/PERFORMANCE_OPTIMIZATION_SPEC.md` for the full diagnosis and
+  the measured numbers behind these choices — treat that doc as background,
+  not a live spec (it stayed at zero diff during implementation; catch any
+  future drift against the code by reading the code, not the doc).
 - Temp storage is job-scoped, under a configurable GIA_STORAGE_DIR env var
   (defaults to OS temp dir) — environment-agnostic re: eventual CryoCloud hosting.
 - File input is dual: drag-and-drop upload and a typed server-side path are
@@ -103,6 +123,20 @@
   (threadpool-backed), not yet needing a job-queue/polling pattern. The
   frontend's loading state is deliberately indeterminate to match this.
 - No auth/rate-limiting yet.
+- `RECALIBRATION_THRESHOLD_KM` (100km, in `backend/main.py`) and the
+  per-pixel memory-cost constants `largest_safe_tile_size` is called with
+  (`TILT_BYTES_PER_PIXEL` / `CONTOUR_BYTES_PER_PIXEL` / `GPKG_WRITE_BYTES_PER_PIXEL`
+  in `backend/app.py`) are first-pass estimates, not yet profiled against a
+  real large DEM in this environment — see the "Not yet re-validated" /
+  "Estimated from... not yet profiled" notes right next to each. Revisit
+  alongside the CryoCloud real-data testing milestone below.
+- `ensure_wgs84_raster` still requires the input CRS to be *exactly*
+  EPSG:4326 — relaxing it to treat any unprojected geographic CRS (e.g.
+  NAD83) as close enough, skipping reprojection, was proposed and explicitly
+  declined; don't relax this without asking again.
+- Contour cleanup (`MIN_CONTOUR_VERTICES` / `CONTOUR_SIMPLIFY_TOLERANCE_DEG`
+  in `backend/app.py`) uses conservative first-pass defaults, not tuned
+  against a real large contour set.
 - `PREVIEW_MAX_DIM` (in `api/raster_preview.py`, currently 1024px) is a
   starting value, not yet tuned against real DEM sizes/memory behavior in
   an actual CryoCloud pod — revisit alongside the next-milestone testing

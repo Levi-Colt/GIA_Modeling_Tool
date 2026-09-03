@@ -22,5 +22,12 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist'
+  },
+  // Vitest reads this same `test` key from the shared vite config -- no
+  // separate vitest.config.js. jsdom gives the component tests a DOM;
+  // setupFiles wires up @testing-library/jest-dom's matchers globally.
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./src/test/setup.js']
   }
 })

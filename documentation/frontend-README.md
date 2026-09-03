@@ -35,10 +35,19 @@ frontend/
   contour/tilted-raster result preview. See `VISUALIZATION_PIPELINE_SPEC.md`
   for the full contract and staged build order.
 - Presets and the reprojection modal aren't scaffolded yet.
-- No JS test runner is configured in this repo (no `test` script or
-  Vitest/Jest devDependency) — frontend changes are verified via `npm run
-  build` plus manual/browser-driven checks against the running app, not an
-  automated frontend test suite.
+- Vitest + `@testing-library/react` are configured (`npm test`, config lives
+  in `vite.config.js`'s `test` key, setup file at `src/test/setup.js`). Still
+  thin — most of the frontend is still verified via `npm run build` plus
+  manual/browser-driven checks against the running app, not full coverage —
+  but component tests are a real, supported option now, not something to
+  bootstrap from scratch each time. See
+  `src/components/steps/CoordinateSteps.test.jsx` for the current pattern
+  (render via `ProcessingProvider`, mock `api/client.js`, drive the DOM with
+  `@testing-library/user-event`). Pure logic that doesn't need a DOM (e.g.
+  `utils/readiness.js`) is deliberately split out of component files so it's
+  testable without pulling in heavy UI dependencies (`MapPanel.jsx` ->
+  `georaster-layer-for-leaflet` in particular doesn't resolve cleanly under
+  Vitest's module resolution) — keep that pattern for similar extractions.
 
 ## Production build
 

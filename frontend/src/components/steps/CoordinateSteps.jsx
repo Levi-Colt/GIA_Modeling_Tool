@@ -99,7 +99,16 @@ export function CoordinatesStep() {
         type="text"
         placeholder={config.placeholder}
         value={formState.originValue}
-        onChange={(e) => updateForm({ originValue: e.target.value })}
+        onChange={(e) => updateForm({
+          originValue: e.target.value,
+          // Invalidates the previous blur-triggered check immediately, so a
+          // stale elevationCheckValue/targetElevation from an earlier
+          // coordinate can't look "current" just because the field hasn't
+          // been re-blurred yet. isReadyToRun (App.jsx) gates on this going
+          // back to 'idle' until a fresh check resolves.
+          elevationCheckStatus: 'idle',
+          resolveOriginStatus: 'idle'
+        })}
         onBlur={handleBlur}
         className="w-full"
       />
@@ -108,7 +117,11 @@ export function CoordinatesStep() {
           type="text"
           placeholder="EPSG:32612"
           value={formState.originEpsg}
-          onChange={(e) => updateForm({ originEpsg: e.target.value })}
+          onChange={(e) => updateForm({
+            originEpsg: e.target.value,
+            elevationCheckStatus: 'idle',
+            resolveOriginStatus: 'idle'
+          })}
           onBlur={handleBlur}
           className="mt-2 w-full"
         />

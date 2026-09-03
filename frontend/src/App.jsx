@@ -12,6 +12,7 @@ import ResultsError from './components/results/ResultsError.jsx'
 import { runProcess } from './api/client.js'
 import { scrollToStep } from './utils/steps.js'
 import { azimuthLine as computeAzimuthLine } from './utils/geometry.js'
+import { isReadyToRun } from './utils/readiness.js'
 
 // Derives the map's input-preview shape from form state alone — the
 // extent/origin/demCrs fields come from /api/preflight and
@@ -65,15 +66,6 @@ function classifyErrorStep(message) {
   if (/elevation range/.test(text)) return 'tilt'
   if (/file type|corrupted|geotiff|extension/.test(text)) return 'upload'
   return null
-}
-
-// UX nicety only — not a substitute for the backend's own 422 validation.
-function isReadyToRun(formState) {
-  if (formState.preflightStatus !== 'valid') return false
-  if (!formState.originValue) return false
-  if (formState.originMode === 'epsg' && !formState.originEpsg) return false
-  if (!formState.tiltAzimuth || !formState.tiltFactor || !formState.targetElevation) return false
-  return true
 }
 
 function buildProcessPayload(formState) {

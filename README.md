@@ -2,7 +2,7 @@
 This tool uses modern DEM data to simulate glacial isostatic adjustment (GIA) for the purpose of identifying potential paleo strandlines.
 
 ## How it works
-Given a DEM (Digital Elevation Model) GeoTIFF, an origin point, a tilt direction and magnitude, and a target elevation, the tool:
+Given a DEM GeoTIFF, an origin point, a tilt direction and magnitude, and a target elevation, the tool:
 
 1. **Inspects the input file** (`raster_io_check`) against the system's available RAM to decide whether it's safe to load the whole DEM into memory, or whether it needs to be streamed through in tiles instead.
 2. **Applies a directional planar tilt** (`calculate_tilt`) across the DEM, modeling the effect of glacial isostatic rebound/depression away from an origin point.
@@ -30,8 +30,7 @@ pip install -r setup/requirements-dev.txt
 
 The full stack (backend + API + built frontend, all served by one FastAPI
 process) is meant to run inside your own CryoCloud (NASA/2i2c JupyterHub)
-pod, exposed via `jupyter-server-proxy`. This is lab-only, clone-and-build
-for now -- no shared/org-wide CryoCloud image, no admin registration needed.
+pod, exposed via `jupyter-server-proxy`. 
 
 ```bash
 conda env create -f setup/environment.yml
@@ -83,6 +82,7 @@ A few behaviors are intentional trade-offs or documented gaps rather than bugs, 
 - **`write_dem_to_gpkg` overwrites an existing file at the same path by default** (`overwrite=True`); pass `overwrite=False` to restore the strict raise-if-exists behavior (e.g. to add a raster layer to an existing multi-layer `.gpkg` without touching its other layers). `write_dem_to_gpkg_windowed` shares the same `overwrite` parameter and default.
 - **No `nodata` value is declared on GeoPackage raster output** — NaN values round-trip correctly as bit patterns, but downstream tools that rely on an explicit nodata tag (rather than recognizing NaN by convention) will treat those cells as literal data.
 - **Multi-tile DEM mosaicking is not yet supported.** Input DEMs are expected as a single GeoTIFF; if a study area spans multiple source tiles (e.g., multiple 1°x1° USGS tiles), the user is currently responsible for mosaicking them beforehand.
+- **DEM inputs are automatically reprojected to WGS84.** Regardless of the CRS of the input DEM, once uploaded, the input DEM is reprojected to WGS84. This is done to enforce CRS uniformity and simplify the map visualization, tilt calculation, and contouring workflows. This also means any products the user downloads will also be in WGS84.
 
 ## Documentation
 

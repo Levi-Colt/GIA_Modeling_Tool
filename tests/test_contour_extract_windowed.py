@@ -162,3 +162,36 @@ def test_large_halo_larger_than_tile_still_works(tmp_path):
     path = _radial_dome_dem(tmp_path, grid=40)
     merged = extract_strandline_contours_windowed(path, target_elevation=700.0, tile_size=10, halo=100)
     assert not merged.is_empty
+
+
+# --- degenerate clip results (a contour only touching a tile's core box) ---
+
+def test_contour_touching_tile_core_at_a_single_point_does_not_crash(tmp_path, monkeypatch):
+    # line.intersection(core_bbox) can return a bare Point (not a LineString /
+    # MultiLineString) when a padded-window contour merely touches the tile's
+    # core box at one point, e.g. at a corner. That used to crash with
+    # AttributeError ('Point' object has no attribute 'geoms').
+    import backend.main as main
+
+    path = _radial_dome_dem(tmp_path, grid=40)
+    # Corner of the top-left core tile (tile_size=10): (-105.0 + 10 * pixel, 45.0 - 10 * pixel)
+    with rasterio.open(path) as src:
+        cx, cy = src.transform * (10, 10)
+    touching = np.array([[cx, cy], [cx + 0.05, cy - 0.05]])
+    monkeypatch.setattr(main, "extract_strandline_contours", lambda *a, **k: [touching])
+
+    merged = extract_strandline_contours_windowed(path, target_elevation=700.0, tile_size=10, halo=0)
+
+    # Only the tiles the line genuinely passes through contribute; a
+    # corner-touch contributes nothing and must not raise.
+    assert merged.geom_type in ("LineString", "MultiLineString", "GeometryCollection")
+
+
+def test_one_pixel_tiles_do_not_crash(tmp_path):
+    # tile_size=1 is what largest_safe_tile_size can pick under a near-zero
+    # RAM budget; it used to crash on a Point clip result.
+    path = _radial_dome_dem(tmp_path, grid=40)
+    merged = extract_strandline_contours_windowed(path, target_elevation=700.0, tile_size=1, halo=2)
+    one_tile = extract_strandline_contours_windowed(path, target_elevation=700.0, tile_size=1024, halo=32)
+    assert not merged.is_empty
+    assert merged.length == pytest.approx(one_tile.length, rel=0.05)

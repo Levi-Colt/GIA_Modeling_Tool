@@ -257,13 +257,11 @@ def extract_strandline_contours_windowed(tilted_DEM_path, target_elevation, tile
                 for coords in tile_contours:
                     line = LineString(coords)
                     clipped = line.intersection(core_bbox)
-                    if clipped.is_empty:
-                        continue
-                    # intersection can return LineString or MultiLineString
-                    if clipped.geom_type == "LineString":
-                        fragments.append(clipped)
-                    else:
-                        fragments.extend(clipped.geoms)
+                    # intersection can return a LineString, a MultiLineString, or
+                    # -- when a contour only touches the core box at a corner or
+                    # along an edge -- a Point / GeometryCollection. Keep just
+                    # the line pieces; point-touches carry no contour length.
+                    fragments.extend(_flatten_to_lines(clipped))
     merged = linemerge(MultiLineString(fragments))
     return merged
 

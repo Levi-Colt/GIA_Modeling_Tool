@@ -73,6 +73,64 @@ def test_windowed_tilt_matches_standard_tilt(large_dem_array, large_transform, l
     np.testing.assert_allclose(windowed_tilted, standard_tilted, rtol=1e-4, atol=1e-3)
 
 
+def _write_dem(path, array, transform):
+    profile = {
+        "driver": "GTiff", "height": array.shape[0], "width": array.shape[1], "count": 1,
+        "dtype": "float32", "crs": "EPSG:4326", "transform": transform, "nodata": -9999.0,
+    }
+    with rasterio.open(str(path), "w", **profile) as dst:
+        dst.write(array, 1)
+    return str(path)
+
+
+@pytest.mark.parametrize("grid,pixel,origin", [
+    (GRID, PIXEL, TILT_ORIGIN),                    # ~22 km diagonal: single calibration
+    (150, 0.01, (-104.25, 44.25)),                 # ~200 km diagonal: per-row cos(lat)
+])
+def test_windowed_quadratic_guard_clamp_matches_in_memory(tmp_path, grid, pixel, origin):
+    # A concave-up quadratic with hinge mode 'none', so the zero-gradient guard
+    # (-g0/k = -10 km) sets the clamp INSIDE the raster: blocks on both sides of
+    # it -- and blocks it cuts through -- are exercised. The clamp is resolved
+    # once at build time, so windowed and in-memory runs must agree.
+    from backend.uplift import build_uplift_model
+
+    transform = from_origin(ORIGIN_LON, ORIGIN_LAT, pixel, pixel)
+    y, x = np.indices((grid, grid))
+    dem = (1000.0 - 0.5 * x - 0.25 * y).astype("float32")
+    dem_path = _write_dem(tmp_path / "dem.tif", dem, transform)
+
+    spec = {
+        "version": 1, "direction": {"type": "azimuth"},
+        "profile": {"family": "quadratic", "rate_of_increase": 0.3, "coefficients": None},
+        "hinge": {"mode": "none", "distance_km": None},
+    }
+    model = build_uplift_model(spec, 28.0, 3.0)
+    assert model.hinge_d == pytest.approx(-10.0)
+    assert model.hinge_source == "guard"
+
+    in_memory = calculate_tilt(dem, transform, origin, 28.0, 3.0, uplift_model=model)
+    chunked = calculate_tilt(dem, transform, origin, 28.0, 3.0, uplift_model=model, chunk_rows=13)
+    out_path = str(tmp_path / "windowed.tif")
+    tilt_DEM_windowed(dem_path, out_path, origin, 28.0, 3.0, tile_size=16, uplift_model=model)
+    with rasterio.open(out_path) as src:
+        windowed = src.read(1)
+
+    np.testing.assert_allclose(windowed, in_memory, rtol=1e-6, atol=1e-3)
+    np.testing.assert_allclose(chunked, in_memory, rtol=1e-6, atol=1e-3)
+    # The model actually did something beyond the basic tilt.
+    basic = calculate_tilt(dem, transform, origin, 28.0, 3.0)
+    assert np.abs(in_memory - basic).max() > 1.0
+
+
+def test_uplift_model_takes_precedence_over_azimuth_and_factor(large_dem_array, large_transform):
+    from backend.uplift import linear_planar_model
+
+    model = linear_planar_model(90.0, 2.0)
+    via_model = calculate_tilt(large_dem_array, large_transform, TILT_ORIGIN, 0.0, 99.0, uplift_model=model)
+    direct = calculate_tilt(large_dem_array, large_transform, TILT_ORIGIN, 90.0, 2.0)
+    assert np.array_equal(via_model, direct)
+
+
 def test_windowed_contours_match_standard_contours(large_dem_array, large_transform, large_dem_path, tmp_path):
     target_elevation = 700.0  # crosses the radial dome as a ring, away from any edge
 

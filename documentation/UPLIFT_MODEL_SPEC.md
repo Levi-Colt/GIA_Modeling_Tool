@@ -1,5 +1,9 @@
 # GIA Modeling Tool — Uplift Model & Profile Families Spec
 
+> **Amended by `UPLIFT_MODEL_CORRECTIONS_SPEC.md` (spec 4a): hinge modes,
+> quadratic input forms, and user-facing text. Where they conflict, 4a
+> wins.**
+
 Spec 4 of the Sep 2026 feature set, and the first structural spec. It
 touches the backend, API, and frontend. Implement after
 `LAYOUT_AND_MODES_SPEC.md` (spec 3): this spec fills the Advanced tilt-model

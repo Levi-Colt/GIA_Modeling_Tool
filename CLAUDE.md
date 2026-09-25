@@ -13,7 +13,7 @@
   the repo root is on `sys.path` (see `api/main.py`'s `sys.path.insert`).
 - `api/`: FastAPI layer wrapping the backend. Routes: `POST /api/process`,
   `POST /api/preflight`, `POST /api/resolve-point`, `POST /api/raster-preview`,
-  `POST /api/origin-elevation`, `GET /api/health`.
+  `POST /api/origin-elevation`, `POST /api/profile-preview`, `GET /api/health`.
   See `documentation/api-README.md` for the full request/response contract.
 - `frontend/`: React (JS, not TS) + Vite + Tailwind + Leaflet (map panel).
   See `documentation/frontend-README.md` for structure and what's
@@ -73,16 +73,101 @@
   literal concentric-distance-band scheme originally proposed — that was
   implemented and measured first, and didn't reduce error at any band width,
   because the real error driver is latitude, not radial distance from the
-  origin). `calculate_tilt` also chunks internally in row-strips
-  (`chunk_rows`) so its own intermediate arrays stay bounded regardless of
-  raster size, independent of `tilt_DEM_windowed`'s block-level windowing.
-  Both `chunk_rows` and the three windowed pipeline functions' `tile_size`
-  are sized once per run by `largest_safe_tile_size()`, called from
-  `process_dem`, rather than each hardcoding its own constant. See
+  origin). That calibrated frame now lives in `_local_en_km` (with its exact
+  inverse `_local_en_to_lonlat`), and `_tilt_block` is just `lons, lats` →
+  `_local_en_km` → `uplift_model.evaluate(east_km, north_km)` → `block - U`;
+  see the uplift-model entry below. `calculate_tilt` also chunks internally in
+  row-strips (`chunk_rows`) so its own intermediate arrays stay bounded
+  regardless of raster size, independent of `tilt_DEM_windowed`'s block-level
+  windowing. Both `chunk_rows` and the three windowed pipeline functions'
+  `tile_size` are sized once per run by `largest_safe_tile_size()`, called from
+  `process_dem`, rather than each hardcoding its own constant (the tilt cost is
+  `TILT_BYTES_PER_PIXEL + uplift_model.extra_bytes_per_pixel`). See
   `documentation/PERFORMANCE_OPTIMIZATION_SPEC.md` for the full diagnosis and
   the measured numbers behind these choices — treat that doc as background,
   not a live spec (it stayed at zero diff during implementation; catch any
   future drift against the code by reading the code, not the doc).
+- **Location-agnostic, spillway-anchored (design principle).** The tool is a
+  general-purpose model for users who usually *don't* have dense paleo-strandline
+  data. Nothing in defaults, UI text, placeholders, help text, warnings, `detail`
+  messages, results text or `aria-label`s may be tuned to, or point users
+  toward, one paper or one set of basins. Lewis, Breckenridge & Teller (2021)
+  informed the model's *form* (polynomial profiles, varying uplift directions);
+  it is not a calibration source. Comments and docstrings may cite it as
+  background for the form, never its values as defaults or "typical" settings.
+  Profile defaults are empty fields and the `origin` hinge; placeholders are
+  units only. Enforced for `frontend/src` (non-test) and `api/` by
+  `tests/test_no_basin_specific_text.py` (its term list lives in that file);
+  test fixtures may use realistic values but must not be named after a basin.
+  Everything is described in spillway terms: the strandline is contoured at the
+  spillway's DEM elevation, uplift is zero there, and `tilt_factor` is the
+  gradient *at the spillway* (user-facing text says "spillway"; code keeps
+  "origin"). Future specs (vectors, shore points) inherit this.
+- **Uplift models** (`backend/uplift.py`, `documentation/UPLIFT_MODEL_SPEC.md`
+  as amended by `documentation/UPLIFT_MODEL_CORRECTIONS_SPEC.md`, "spec 4a";
+  where they conflict, 4a wins).
+  The tilted DEM is `DEM − U`, where `U` is uplift in meters *relative to the
+  origin* and comes from a pluggable model: `evaluate(east_km, north_km) → U`
+  (float64, broadcastable), plus `extra_bytes_per_pixel` for the memory
+  estimate. `U(origin) == 0` always, which keeps the DEM-authoritative target
+  elevation valid. `calculate_tilt` / `tilt_DEM_windowed` / `process_dem` take
+  `uplift_model=None`; `None` builds `linear_planar_model(tilt_azimuth,
+  tilt_factor)`, and a given model takes precedence (azimuth/factor are then
+  ignored by the math). Profiles are `U(d) = Σₖ cₖ dᵏ`, k = 1…n, no constant
+  term, `d` = signed km along the azimuth (the pre-clamp
+  `projected_distance_km`). **`tilt_factor` is always c₁, the gradient at the
+  spillway** — one source of truth in every family (`linear`; `quadratic`,
+  c₂ = k/2, whose curvature `k` may be given as a `rate_of_increase` **or** as a
+  `second_gradient` {gradient, distance_km} which the API layer converts with
+  `k = (gradient − tilt_factor)/distance_km`, so the backend and
+  `run_parameters.json` stay canonical in k; `polynomial` with c₂…c₅).
+  **Hinge modes** (behind the spillway): `origin` (d_h = 0; **the default for
+  every family**), `distance` (−distance_km), `none` (the profile continues to
+  the DEM edge; valid for linear too). Evaluation is `U(max(d, d_h))`.
+  **The zero-gradient point is a guard, not a hinge mode** (`natural` was
+  removed; the API returns a 422 explaining that): in every mode, if g = U′
+  reaches zero behind the spillway *before* the mode's point (largest real root
+  of g in (mode's point, 0)), uplift is held constant from that zero — uplift
+  never re-increases behind the spillway. It is reported as *information*, not
+  a warning: `PolynomialProfile.resolve_hinge` returns `(d_h, source)` with
+  `source` = `'mode' | 'guard' | None`, exposed as `hinge_source` next to
+  `hinge_km` by `/api/profile-preview` and `run_parameters.json`; the frontend
+  builds the "gradient reaches zero X km behind the spillway…" note from them.
+  `d_h` is resolved **once at model build time** (`numpy.roots`; roots within
+  1e-12 of 0 count as "at the origin"), so per-block work is purely elementwise
+  and windowed == in-memory. There is no forward guard; a gradient sign change
+  within the DEM's up-tilt range only warns, via
+  `model.warn_for_range(d_min, d_max)`, called from `process_dem` (a model
+  can't know the DEM's extent at build time) with the range from
+  `uplift_d_range_km` (the four bounds corners through `_local_en_km`, the same
+  helper `/api/profile-preview` uses). **`_local_en_km` is the single shared
+  local frame**: isobases, vectors and shore points (specs 5/6) must be built
+  in it (and mapped back with `_local_en_to_lonlat`), never in a separately
+  derived projection. **The basic path is bit-identical to the pre-refactor
+  arithmetic**, asserted with `np.array_equal` (never `allclose`) against a
+  frozen `_legacy_tilt_block` in `tests/test_tilt_legacy_regression.py` —
+  don't loosen that test to make a change pass; for a single coefficient
+  `PolynomialProfile.U` is the literal `d * c1`. The API layer validates the
+  `tilt_model` JSON with Pydantic (`api/tilt_model.py`, `extra="forbid"`,
+  specific 422 messages; the parse functions take `tilt_factor` because the
+  second-gradient conversion needs it) and hands `backend/uplift.py` a plain
+  dict — the backend has no Pydantic/FastAPI imports. `POST
+  /api/profile-preview` returns the curve with no raster I/O. Every zip also
+  carries `run_parameters.json`. Frontend: profile state in `advanced.profile`
+  (`curvatureInput: 'secondGradient' | 'rate'`, default `'secondGradient'`; the
+  hidden form and hidden polynomial coefficient slots keep their typed values)
+  and `advanced.hinge` (`mode: 'origin' | 'distance' | 'none'` — there is **no
+  `'default'` value**; the payload always sends an explicit mode, and
+  `loadCarriedForwardState` maps a persisted `'default'`/`'natural'` to
+  `'origin'`); the numeric text inputs go through `parseFiniteNumber` (rejects
+  `''`, unlike `Number('')`); a quadratic sends only its active curvature form;
+  the preview response is the **transient top-level `profilePreview` key** (in
+  `TRANSIENT_KEYS`), fetched by `useProfilePreview` from `ProcessingPage` so it
+  exists while the tilt section is collapsed and feeds the results screen's
+  hinge summary. The chart labels its zero line "spillway" and marks the
+  second-gradient point (interpolated from the returned samples) while that form
+  is active. Spec 5's per-vector custom quadratic must accept the same two
+  curvature forms (second gradient relative to the vector's own location).
 - Temp storage is job-scoped, under a configurable GIA_STORAGE_DIR env var
   (defaults to OS temp dir) — environment-agnostic re: eventual CryoCloud hosting.
 - File input is dual: drag-and-drop upload and a typed server-side path are
@@ -134,9 +219,9 @@
   lives in the Origin section. State rule (`ProcessingContext`): fields
   both modes use stay at the top level under their existing names —
   **`tiltAzimuth` is Advanced's "single azimuth" and `tiltFactor` is
-  Advanced's "gradient at origin"; later specs must reuse those keys, never
+  Advanced's "gradient at spillway"; later specs must reuse those keys, never
   add duplicates.** Advanced-only fields live in `formState.advanced`
-  (`sectionsOpen` now; profile family/vectors/shore points later), changed
+  (`sectionsOpen`, `profile`, `hinge` now; vectors/shore points later), changed
   via `updateAdvanced(patch)` (shallow merge — pass a whole nested object).
   **Switching modes changes only `mode` and never clears or rewrites any
   other field.** `mode` and `advanced` persist through the carry-forward
@@ -148,11 +233,13 @@
   (`missingText` feeds the footer's "Still needed" line; `section` is
   `dem | origin | tilt | output`) and `buildProcessPayload` branches on
   `mode`; both have a marked `mode === 'advanced'` branch for later specs
-  to append to, and advanced-only fields must never affect a Basic run's
-  readiness or payload. **`TiltModelBody`** (in `AdvancedForm.jsx`) is the
-  single extension point for the tilt-model section: later specs mount the
-  direction-source switch, profile families, vectors, and shore points
-  there. `focusRequest` (`{ id, n }`, in `ProcessingPage`) is how error
+  to append to (it now carries the uplift-model checks / `tilt_model`
+  field), and advanced-only fields must never affect a Basic run's
+  readiness or payload. **`TiltModelBody`** (now
+  `components/advanced/TiltModelBody.jsx`, imported by `AdvancedForm.jsx`) is
+  the single extension point for the tilt-model section: it holds the
+  profile family / parameters / hinge / chart, and later specs mount the
+  direction-source switch, vectors, and shore points there. `focusRequest` (`{ id, n }`, in `ProcessingPage`) is how error
   routing reaches the forms: Basic scrolls, Advanced opens the section
   first and then scrolls; it is cleared on mode switches.
 - Optional selection radius: `select_contours_within_radius` (`backend/main.py`)
@@ -161,7 +248,8 @@
   ("intersects") mode is exposed via the API/UI; the backend's `"clip"` mode
   is a held-back fallback. `X-Selection-Summary` reports the kept count.
 - `/api/process`'s response is a zip bundle (`.gpkg` + `contour.geojson` +
-  optional `preview_tilted.tif`), not a bare `.gpkg` — see
+  optional `preview_tilted.tif` + always `run_parameters.json`), not a bare
+  `.gpkg` — see
   `documentation/api-README.md`. The two preview artifacts are read back
   from the just-written `.gpkg` (`gpd.read_file` for the vector layer,
   `rasterio` against the GPKG raster table for the DEM) rather than
@@ -175,6 +263,14 @@
   outside the DEM's bounds or on nodata cells. Enforced server-side in
   `/api/process`; `/api/origin-elevation` is a preview-only convenience, not
   a second source of truth.
+  **Spillway-elevation assumption:** the strandline is contoured at the
+  spillway's *present* DEM elevation. This assumes the spillway sill has not
+  been significantly eroded, incised, or buried since the shoreline formed, and
+  it ignores the depth of water flowing over the sill (typically a few meters).
+  Where either is significant, enter the target elevation manually by placing
+  the origin off the DEM, or accept that offset. The Origin section shows a
+  muted one-line note to this effect under the target-elevation field, in both
+  modes.
 
 ## Open items
 - Sync vs. async processing for very large DEMs — currently synchronous
@@ -217,7 +313,10 @@
   for ini files, never into subdirectories), and `--rootdir=.` keeps
   `pytest.ini`'s `pythonpath = .` resolving to the repo root rather than to
   `setup/` itself (which is where rootdir would otherwise default to,
-  since that's the ini file's own directory).
+  since that's the ini file's own directory). To run one file, use
+  `python -m pytest -c setup/pytest.ini --rootdir=. tests/test_x.py`: bare
+  `pytest` with a file path fails to import `backend` (the repo root isn't on
+  `sys.path` then), while `-k` selection on the full run works.
 - Frontend: wireframed in Penpot against `documentation/api-README.md`'s
   contract; full wireframe rationale and component contracts are in
   `documentation/GIA_Tool_Penpot_Spec.md`. Scaffold exists in `frontend/`
@@ -237,3 +336,4 @@
   (`test_windowed_branch_writes_both_layers_when_include_dem_true`) is a
   numpy-version mismatch from that setup, not a code regression — see that
   test's own comments before assuming a new failure there is your fault.
+  (It did not reproduce when spec 4 landed: the full suite was green.)

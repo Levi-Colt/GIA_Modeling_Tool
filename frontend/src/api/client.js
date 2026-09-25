@@ -77,6 +77,24 @@ export async function originElevation(file, path, originMode, originValue, origi
   return res.json()
 }
 
+// Uplift-vs-distance curve for the Advanced form's chart: pure math on the
+// server, no raster I/O, so cheap enough to call on every (debounced) edit.
+// `body` is { tilt_azimuth, tilt_factor, tilt_model, origin, bounds_wgs84 };
+// see documentation/api-README.md.
+export async function profilePreview(body, { signal } = {}) {
+  const res = await fetch(`${API_BASE}profile-preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ samples: 121, ...body }),
+    signal
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}))
+    throw new Error(typeof detail.detail === 'string' ? detail.detail : 'Profile preview failed')
+  }
+  return res.json()
+}
+
 export async function runProcess(payload) {
   const form = new FormData()
   Object.entries(payload).forEach(([key, value]) => {

@@ -122,6 +122,94 @@ describe('getReadiness', () => {
   })
 })
 
+describe('getReadiness: Advanced tilt model', () => {
+  const advancedForm = (profile = {}, hinge = {}) => ({
+    ...completeForm,
+    mode: 'advanced',
+    advanced: {
+      profile: {
+        family: 'linear',
+        curvatureInput: 'secondGradient',
+        rateOfIncrease: '',
+        secondGradient: '',
+        secondGradientDistanceKm: '',
+        coefficients: ['', '', '', ''],
+        degree: 3,
+        ...profile
+      },
+      hinge: { mode: 'origin', distanceKm: '', ...hinge }
+    }
+  })
+  const tiltReasons = (form) => check(form).missing.filter((m) => m.section === 'tilt').map((m) => m.text)
+  const byRate = (rateOfIncrease, extra = {}) =>
+    advancedForm({ family: 'quadratic', curvatureInput: 'rate', rateOfIncrease, ...extra })
+  const bySecond = (secondGradient, secondGradientDistanceKm, extra = {}) =>
+    advancedForm({ family: 'quadratic', curvatureInput: 'secondGradient', secondGradient, secondGradientDistanceKm, ...extra })
+
+  it('is ready for the default linear profile', () => {
+    expect(check(advancedForm()).ready).toBe(true)
+  })
+
+  it('quadratic by rate requires a finite rate', () => {
+    for (const bad of ['', '  ', 'abc', 'Infinity', '1,5', '0x10', '1e']) {
+      expect(tiltReasons(byRate(bad))).toHaveLength(1)
+    }
+    for (const good of ['0.004', '4e-3', '-0.002', '.5', '0']) {
+      expect(check(byRate(good)).ready).toBe(true)
+    }
+  })
+
+  it('quadratic by second gradient requires a finite gradient and a positive distance', () => {
+    expect(tiltReasons(bySecond('', ''))).toHaveLength(2)
+    expect(tiltReasons(bySecond('1.2', ''))).toHaveLength(1)
+    expect(tiltReasons(bySecond('', '150'))).toHaveLength(1)
+    for (const badDistance of ['0', '-5', 'abc']) expect(check(bySecond('1.2', badDistance)).ready).toBe(false)
+    expect(check(bySecond('1.2', '150')).ready).toBe(true)
+    expect(check(bySecond('-0.3', '150')).ready).toBe(true)
+  })
+
+  it('only the active curvature form is required', () => {
+    // Active = rate: the (empty/junk) second-gradient fields are ignored.
+    expect(check(byRate('4e-3', { secondGradient: 'junk', secondGradientDistanceKm: '-1' })).ready).toBe(true)
+    // Active = second gradient: the (empty/junk) rate is ignored.
+    expect(check(bySecond('1.2', '150', { rateOfIncrease: 'abc' })).ready).toBe(true)
+    // ...and each active form is still enforced when the other is filled in.
+    expect(check(byRate('', { secondGradient: '1.2', secondGradientDistanceKm: '150' })).ready).toBe(false)
+    expect(check(bySecond('', '', { rateOfIncrease: '4e-3' })).ready).toBe(false)
+  })
+
+  it('polynomial requires c2..c_degree all finite, and ignores slots past the degree', () => {
+    const poly = (degree, coefficients) => advancedForm({ family: 'polynomial', degree, coefficients })
+    expect(check(poly(3, ['0.1', '', '', ''])).ready).toBe(false)
+    expect(check(poly(3, ['0.1', 'x', '', ''])).ready).toBe(false)
+    expect(check(poly(3, ['0.1', '0.2', '', ''])).ready).toBe(true)
+    expect(check(poly(2, ['0.1', 'junk', 'junk', 'junk'])).ready).toBe(true)
+    expect(check(poly(5, ['1', '2', '3', ''])).ready).toBe(false)
+    expect(check(poly(5, ['1', '2', '3', '4'])).ready).toBe(true)
+  })
+
+  it('a distance hinge requires distanceKm > 0; other modes never look at it', () => {
+    const dist = (distanceKm) => advancedForm({}, { mode: 'distance', distanceKm })
+    for (const bad of ['', '0', '-5', 'abc']) expect(check(dist(bad)).ready).toBe(false)
+    expect(check(dist('30')).ready).toBe(true)
+    expect(check(advancedForm({}, { mode: 'origin', distanceKm: 'abc' })).ready).toBe(true)
+    expect(check(advancedForm({}, { mode: 'none', distanceKm: 'abc' })).ready).toBe(true)
+  })
+
+  it('keys every new reason to the tilt section', () => {
+    const { missing } = check(bySecond('', '', { family: 'quadratic' }))
+    expect(missing.map((m) => m.section)).toEqual(['tilt', 'tilt'])
+    const both = check({ ...byRate(''), advanced: { ...byRate('').advanced, hinge: { mode: 'distance', distanceKm: '' } } })
+    expect(both.missing.map((m) => m.section)).toEqual(['tilt', 'tilt'])
+  })
+
+  it('Basic readiness ignores advanced.profile and advanced.hinge entirely', () => {
+    const bad = advancedForm({ family: 'quadratic', curvatureInput: 'rate', rateOfIncrease: 'abc' }, { mode: 'distance', distanceKm: '' })
+    expect(check({ ...bad, mode: 'basic' })).toEqual(check(completeForm))
+    expect(check({ ...bad, mode: 'basic' }).ready).toBe(true)
+  })
+})
+
 describe('parseSelectionRadiusKm', () => {
   it('returns the number for valid values and null otherwise', () => {
     expect(parseSelectionRadiusKm('12.5')).toBe(12.5)

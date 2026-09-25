@@ -50,7 +50,7 @@ def test_zip_contains_gpkg_and_contour_when_include_dem_false(sloped_dem_path, t
 
     with zipfile.ZipFile(io.BytesIO(response.body)) as zf:
         names = set(zf.namelist())
-        assert names == {"strandlines.gpkg", "contour.geojson"}
+        assert names == {"strandlines.gpkg", "contour.geojson", "run_parameters.json"}
 
         contour_bytes = zf.read("contour.geojson")
         # Extract to a real file on disk (what a real client would do with
@@ -72,7 +72,7 @@ def test_zip_includes_preview_tilted_tif_when_include_dem_true(sloped_dem_path):
 
     with zipfile.ZipFile(io.BytesIO(response.body)) as zf:
         names = set(zf.namelist())
-        assert names == {"strandlines.gpkg", "contour.geojson", "preview_tilted.tif"}
+        assert names == {"strandlines.gpkg", "contour.geojson", "preview_tilted.tif", "run_parameters.json"}
         preview_bytes = zf.read("preview_tilted.tif")
 
     with rasterio.MemoryFile(preview_bytes) as mem:

@@ -51,7 +51,7 @@ describe('AdvancedForm focusRequest', () => {
 
     await waitFor(() => expect(sectionButton('Tilt model')).toHaveAttribute('aria-expanded', 'true'))
     expect(screen.getByLabelText('Single azimuth')).toBeInTheDocument()
-    expect(screen.getByLabelText('Gradient at origin (m/km)')).toBeInTheDocument()
+    expect(screen.getByLabelText('Gradient at spillway (m/km)')).toBeInTheDocument()
     // Only the requested section opened.
     expect(sectionButton('Output')).toHaveAttribute('aria-expanded', 'false')
     expect(ctx.formState.advanced.sectionsOpen).toEqual({ ...ALL_CLOSED, tilt: true })

@@ -90,6 +90,84 @@ describe('persistence', () => {
     expect(ctx.formState.advanced.futureKey).toBe('kept')
   })
 
+  it('gives an older save (no profile/hinge) the uplift-model defaults', () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ mode: 'advanced', advanced: { sectionsOpen: { dem: false } } })
+    )
+    mount()
+    expect(ctx.formState.advanced.profile).toEqual({
+      family: 'linear',
+      curvatureInput: 'secondGradient',
+      rateOfIncrease: '',
+      secondGradient: '',
+      secondGradientDistanceKm: '',
+      coefficients: ['', '', '', ''],
+      degree: 3
+    })
+    expect(ctx.formState.advanced.hinge).toEqual({ mode: 'origin', distanceKm: '' })
+  })
+
+  it.each(['default', 'natural'])("migrates a persisted hinge mode of '%s' to 'origin'", (legacy) => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        mode: 'advanced',
+        advanced: {
+          profile: { family: 'quadratic', rateOfIncrease: '4e-3' },
+          hinge: { mode: legacy, distanceKm: '30' }
+        }
+      })
+    )
+    mount()
+    expect(ctx.formState.advanced.hinge).toEqual({ mode: 'origin', distanceKm: '30' })
+    // The rest of the saved profile survives, and the new curvature keys get defaults.
+    expect(ctx.formState.advanced.profile.family).toBe('quadratic')
+    expect(ctx.formState.advanced.profile.rateOfIncrease).toBe('4e-3')
+    expect(ctx.formState.advanced.profile.curvatureInput).toBe('secondGradient')
+  })
+
+  it.each(['origin', 'distance', 'none'])("keeps a valid persisted hinge mode '%s'", (mode) => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ advanced: { hinge: { mode, distanceKm: '5' } } })
+    )
+    mount()
+    expect(ctx.formState.advanced.hinge.mode).toBe(mode)
+  })
+
+  it('a save with no hinge at all gets the origin default', () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ advanced: { sectionsOpen: { dem: false } } }))
+    mount()
+    expect(ctx.formState.advanced.hinge.mode).toBe('origin')
+  })
+
+  it('persists and restores profile/hinge fields, but never the profile preview response', () => {
+    const first = mount()
+    act(() => {
+      ctx.updateAdvanced({
+        profile: {
+          family: 'polynomial', curvatureInput: 'rate', rateOfIncrease: '1e-3', secondGradient: '1.2',
+          secondGradientDistanceKm: '150', coefficients: ['1', '2', '', ''], degree: 4
+        },
+        hinge: { mode: 'distance', distanceKm: '30' }
+      })
+      ctx.updateForm({ profilePreview: { status: 'ready', data: { hinge_km: -5 }, error: null } })
+    })
+    const saved = JSON.parse(window.localStorage.getItem(STORAGE_KEY))
+    expect(saved).not.toHaveProperty('profilePreview')
+    expect(saved.advanced.profile.family).toBe('polynomial')
+    first.unmount()
+
+    mount()
+    expect(ctx.formState.advanced.profile.coefficients).toEqual(['1', '2', '', ''])
+    expect(ctx.formState.advanced.profile.degree).toBe(4)
+    expect(ctx.formState.advanced.profile.curvatureInput).toBe('rate')
+    expect(ctx.formState.advanced.profile.secondGradient).toBe('1.2')
+    expect(ctx.formState.advanced.hinge).toEqual({ mode: 'distance', distanceKm: '30' })
+    expect(ctx.formState.profilePreview).toBeNull()
+  })
+
   it('falls back to defaults when the saved advanced value is corrupt', () => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ advanced: null }))
     mount()

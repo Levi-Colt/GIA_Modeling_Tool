@@ -1,5 +1,6 @@
 import Banner from '../shared/Banner.jsx'
 import { parseSelectionRadiusKm } from '../../utils/readiness.js'
+import { describeTiltModel } from '../../utils/tiltModel.js'
 
 function triggerDownload(blob, filename) {
   const url = URL.createObjectURL(blob)
@@ -53,6 +54,13 @@ export default function ResultsSuccess({ result, formState, onRunAgain, onAdjust
         elevation {formState.targetElevation} m
         {parseSelectionRadiusKm(formState.selectionRadiusKm) !== null &&
           <> &middot; Radius {formState.selectionRadiusKm} km</>}
+        {formState.mode === 'advanced' && (
+          <> &middot; {describeTiltModel(
+              formState.advanced,
+              formState.profilePreview?.data?.hinge_km,
+              formState.profilePreview?.data?.hinge_source
+            )}</>
+        )}
       </p>
 
       <div className="flex gap-2">

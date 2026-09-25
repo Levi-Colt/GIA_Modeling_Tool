@@ -18,14 +18,21 @@ Run locally with:
     uvicorn api.main:app --reload
 from the repository root.
 """
+import datetime
+import functools
 import io
+import json
 import math
 import os
+import re
+import subprocess
 import sys
 import warnings
 import zipfile
+from typing import Annotated
 
 import geopandas as gpd
+import numpy as np
 import rasterio.errors
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
 from fastapi.responses import Response
@@ -37,7 +44,8 @@ from starlette.concurrency import run_in_threadpool
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.app import process_dem  # noqa: E402  (import after sys.path fixup, see above)
-from backend.main import raster_io_check, check_available_ram_mb  # noqa: E402
+from backend.main import raster_io_check, check_available_ram_mb, uplift_d_range_km  # noqa: E402
+from backend.uplift import build_uplift_model  # noqa: E402
 
 from api.crs import (  # noqa: E402
     normalize_origin_to_wgs84,
@@ -54,6 +62,7 @@ from api.crs import (  # noqa: E402
 )
 from api.storage import create_job_workspace, cleanup_job_workspace, job_workspace  # noqa: E402
 from api.raster_preview import build_preview_geotiff_bytes  # noqa: E402
+from api.tilt_model import TiltModelError, parse_tilt_model, validate_tilt_model  # noqa: E402
 
 app = FastAPI(title="GIA Modeling Tool API")
 
@@ -62,6 +71,30 @@ MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB; adjust to your real ceiling
 
 ORIGIN_MODES = {"match_raster", "decimal_degrees", "epsg"}
 ORIGIN_THRESHOLD_METERS = 500.0
+
+RUN_PARAMETERS_SCHEMA_VERSION = 1
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+@functools.lru_cache(maxsize=1)
+def _git_commit() -> str | None:
+    """The app's git commit, for run_parameters.json -- None when git or the
+    repo metadata isn't available (never worth failing a run over)."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=_REPO_ROOT, capture_output=True, text=True, timeout=2,
+        )
+        commit = out.stdout.strip()
+        return commit if out.returncode == 0 and commit else None
+    except Exception:
+        return None
+
+
+def _input_file_name(filename: str | None) -> str | None:
+    """Bare file name only -- a server path could reveal a private pod layout."""
+    if not filename:
+        return None
+    return re.split(r"[\\/]", filename)[-1] or None
 
 
 @app.post("/api/process")
@@ -95,6 +128,15 @@ async def process(
     selection_radius_km: float | None = Form(
         None, description="Optional: keep only strandline contours within this many km of the origin"
     ),
+    # Annotated (not `= Form(None)`) so a direct in-process call that omits it
+    # -- as the test suite and smoke test do -- gets a real None.
+    tilt_model: Annotated[
+        str | None,
+        Form(description=(
+            "Optional JSON uplift model (profile family + hinge); absent means the basic linear "
+            "tilt. See documentation/api-README.md."
+        )),
+    ] = None,
 ):
     # --- Validate the input shape and the origin shape up front, before touching disk ---
     if selection_radius_km is not None and (
@@ -129,6 +171,17 @@ async def process(
             status_code=422,
             detail="origin_epsg is required when origin_mode is 'epsg'.",
         )
+
+    # --- Parse the optional uplift model and build it now, so a bad or
+    # unbuildable model fails fast, before any upload is written. ---
+    parsed_tilt_model = None
+    uplift_model = None
+    if tilt_model is not None:
+        try:
+            parsed_tilt_model = parse_tilt_model(tilt_model, tilt_factor)
+            uplift_model = build_uplift_model(parsed_tilt_model, tilt_azimuth, tilt_factor)
+        except (TiltModelError, ValueError) as e:
+            raise HTTPException(status_code=422, detail=str(e))
 
     # --- Resolve whatever origin modes don't depend on the raster itself, up
     # front, so malformed input fails fast before any upload happens.
@@ -224,6 +277,7 @@ async def process(
                 output_gpkg_path=output_path,
                 include_dem=include_dem,
                 selection_radius_km=selection_radius_km,
+                uplift_model=uplift_model,
             )
         backend_warnings = [str(w.message) for w in caught]
     except FileNotFoundError as e:
@@ -284,6 +338,30 @@ async def process(
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_STORED) as zf:
         zf.write(output_path, arcname="strandlines.gpkg")
         zf.writestr("contour.geojson", contour_gdf.to_json())
+        zf.writestr("run_parameters.json", json.dumps({
+            "schema_version": RUN_PARAMETERS_SCHEMA_VERSION,
+            "app_commit": _git_commit(),
+            "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+            "input_file": _input_file_name(filename),
+            "origin": {"lon": origin_lon, "lat": origin_lat},
+            "effective_target_elevation": effective_target_elevation,
+            "target_elevation_source": "dem" if sampled_elevation is not None else "manual",
+            "submitted_target_elevation": target_elevation,
+            "tilt_azimuth": tilt_azimuth,
+            "tilt_factor": tilt_factor,
+            "tilt_model": parsed_tilt_model,
+            # Where uplift stops changing behind the spillway (km, negative) and
+            # what set it: 'mode' (the hinge mode) or 'guard' (the gradient
+            # reached zero first). Null for a basic run, or an unclamped profile.
+            "hinge_km": None if uplift_model is None else uplift_model.hinge_d,
+            "hinge_source": None if uplift_model is None else uplift_model.hinge_source,
+            "include_dem": include_dem,
+            "selection_radius_km": selection_radius_km,
+            "reprojected": {
+                "was_reprojected": bool(prep.was_reprojected),
+                "from_crs": prep.original_crs if prep.was_reprojected else None,
+            },
+        }, indent=2))
         if include_dem:
             preview_bytes = build_preview_geotiff_bytes(f"GPKG:{output_path}:modified_dem")
             zf.writestr("preview_tilted.tif", preview_bytes)
@@ -599,6 +677,80 @@ async def origin_elevation(
         if west <= origin_lon <= east and south <= origin_lat <= north:
             return {"within_bounds": True, "elevation": None, "reason": "nodata"}
         return {"within_bounds": False, "elevation": None, "reason": "outside_bounds"}
+
+
+class ProfilePreviewRequest(BaseModel):
+    tilt_azimuth: float
+    tilt_factor: float
+    tilt_model: dict
+    origin: list[float] | None = None  # [lon, lat]
+    bounds_wgs84: list[float] | None = None  # [west, south, east, north]
+    samples: int = 121
+
+
+NOMINAL_D_RANGE_KM = (-100.0, 100.0)
+
+
+@app.post("/api/profile-preview")
+async def profile_preview(body: ProfilePreviewRequest):
+    # --- Pure math, no raster I/O: the uplift-vs-distance curve the run would
+    # apply, for the Advanced form's chart. Uses the same validation and
+    # model-building as /api/process, and the same local frame for the
+    # d-range, so the preview and the run agree. ---
+    if not (2 <= body.samples <= 2000):
+        raise HTTPException(status_code=422, detail="samples must be between 2 and 2000.")
+    if body.origin is not None and (
+        len(body.origin) != 2 or not all(math.isfinite(v) for v in body.origin)
+    ):
+        raise HTTPException(status_code=422, detail="origin must be [lon, lat] (finite numbers).")
+    if body.bounds_wgs84 is not None:
+        b = body.bounds_wgs84
+        if len(b) != 4 or not all(math.isfinite(v) for v in b) or b[0] >= b[2] or b[1] >= b[3]:
+            raise HTTPException(
+                status_code=422,
+                detail="bounds_wgs84 must be [west, south, east, north] with west < east and south < north.",
+            )
+
+    try:
+        parsed = validate_tilt_model(body.tilt_model, body.tilt_factor)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            model = build_uplift_model(parsed, body.tilt_azimuth, body.tilt_factor)
+            if body.origin is not None and body.bounds_wgs84 is not None:
+                d_min, d_max = uplift_d_range_km(model, tuple(body.origin), body.bounds_wgs84)
+                nominal = False
+            else:
+                d_min, d_max = NOMINAL_D_RANGE_KM
+                nominal = True
+            model.warn_for_range(d_min, d_max)
+        messages = [str(w.message) for w in caught]
+        if nominal:
+            messages.append(
+                "The distance range is nominal (-100 to 100 km) because the origin or DEM "
+                "extent is not available yet."
+            )
+    except (TiltModelError, ValueError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    d = np.linspace(d_min, d_max, body.samples)
+    with np.errstate(over="ignore", invalid="ignore"):  # absurd coefficients: caught just below
+        uplift = model.uplift_at_distance(d)
+        gradient = model.gradient_at_distance(d)
+    if not (np.all(np.isfinite(uplift)) and np.all(np.isfinite(gradient))):
+        raise HTTPException(
+            status_code=422,
+            detail="The profile evaluates to non-finite values over the DEM's distance range.",
+        )
+
+    return {
+        "d_km": d.tolist(),
+        "uplift_m": uplift.tolist(),
+        "gradient_m_per_km": gradient.tolist(),
+        "d_range_km": [float(d_min), float(d_max)],
+        "hinge_km": model.hinge_d,
+        "hinge_source": model.hinge_source,
+        "warnings": list(dict.fromkeys(messages)),
+    }
 
 
 @app.get("/api/health")

@@ -1,4 +1,5 @@
 import { createContext, useContext, useRef, useState } from 'react'
+import { DEFAULT_HINGE, DEFAULT_PROFILE, normalizeHingeMode } from '../utils/tiltModel.js'
 
 const STORAGE_KEY = 'gia-tool:last-run'
 
@@ -46,8 +47,22 @@ const defaultState = {
   // add duplicates here. Persisted; transient advanced state (e.g. a fitted
   // surface or validation response) must be added to TRANSIENT_KEYS below.
   advanced: {
-    sectionsOpen: { dem: true, origin: true, tilt: true, output: false }
-  }
+    sectionsOpen: { dem: true, origin: true, tilt: true, output: false },
+    // Uplift model (documentation/UPLIFT_MODEL_SPEC.md D5, amended by
+    // UPLIFT_MODEL_CORRECTIONS_SPEC.md). `tiltFactor` (top level) is the
+    // gradient at the spillway in every family. `degree` sets how many
+    // coefficient inputs show; the hidden curvature form and hidden coefficient
+    // slots keep their typed values.
+    profile: DEFAULT_PROFILE,
+    // mode: 'origin' | 'distance' | 'none'; the default is 'origin' for every family.
+    hinge: DEFAULT_HINGE
+  },
+  // Latest /api/profile-preview result for the tilt-model chart:
+  // { status: 'loading' | 'ready' | 'error', data, error } | null. Transient.
+  // Lives at the top level (not under `advanced`) because TRANSIENT_KEYS only
+  // excludes top-level keys, and it is read by both the chart and the results
+  // screen's hinge summary.
+  profilePreview: null
 }
 
 // Keys never written to localStorage: file objects and transient
@@ -63,7 +78,8 @@ const TRANSIENT_KEYS = [
   'elevationCheckStatus',
   'elevationCheckValue',
   'resolveOriginStatus',
-  'resolvedOrigin'
+  'resolvedOrigin',
+  'profilePreview'
 ]
 
 function isPlainObject(value) {
@@ -92,7 +108,11 @@ function loadCarriedForwardState() {
     if (!saved) return defaultState
     const parsed = JSON.parse(saved)
     // Only `advanced` needs a deep merge; the rest is a flat spread.
-    return { ...defaultState, ...parsed, advanced: deepMerge(defaultState.advanced, parsed.advanced) }
+    const advanced = deepMerge(defaultState.advanced, parsed.advanced)
+    // Spec 4a removed the hinge modes 'default' and 'natural'; a save from
+    // before that (only ever run locally) maps them to the default, 'origin'.
+    advanced.hinge = { ...advanced.hinge, mode: normalizeHingeMode(advanced.hinge?.mode) }
+    return { ...defaultState, ...parsed, advanced }
   } catch {
     return defaultState
   }

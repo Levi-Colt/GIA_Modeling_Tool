@@ -6,7 +6,7 @@ describe('pickBasemapKey', () => {
     expect(pickBasemapKey([-106, 39, -104, 41])).toBe('usgs_topo')
   })
 
-  it('picks NRCan for a Manitoba (Lake Agassiz) extent', () => {
+  it('picks NRCan for a Manitoba extent', () => {
     expect(pickBasemapKey([-100, 50, -97, 53])).toBe('nrcan_cbmt')
   })
 

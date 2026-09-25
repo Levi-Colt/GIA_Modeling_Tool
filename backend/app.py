@@ -3,8 +3,10 @@ import tempfile
 import warnings
 
 import geopandas as gpd
+import rasterio
 from shapely.geometry import LineString, MultiLineString
 
+from backend.uplift import linear_planar_model
 from backend.main import (
     check_available_ram_mb,
     raster_io_check,
@@ -13,6 +15,7 @@ from backend.main import (
     calculate_tilt,
     extract_strandline_contours,
     tilt_DEM_windowed,
+    uplift_d_range_km,
     extract_strandline_contours_windowed,
     select_contours_within_radius,
     write_dem_to_gpkg,
@@ -34,6 +37,10 @@ from backend.main import (
 #   CONTOUR: padded block (float32, 4B) + nan_mask (bool, 1B) + clean_array
 #     (float32, 4B) + skimage's internal marching-squares working buffer
 #     (~2x input, 8B) = ~24B/pixel, rounded up for halo padding overhead.
+#     A non-basic uplift model adds its own per-pixel temporaries on top of
+#     this (uplift_model.extra_bytes_per_pixel: 0 for linear, 16 for degree
+#     >= 2 -- two float64 Horner temporaries); like TILT itself, that 16 is
+#     an estimate, not yet profiled.
 #   GPKG_WRITE: block read (float32, 4B) + GDAL's own write buffer (~4B) =
 #     ~8B/pixel.
 TILT_BYTES_PER_PIXEL = 32
@@ -76,8 +83,18 @@ def _as_line_list(geometry):
 #Simulation of your execution runtime or FastAPI Route handler
 def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
                  target_elevation, output_gpkg_path, include_dem=True,
-                 selection_radius_km=None, selection_mode="intersects"):
+                 selection_radius_km=None, selection_mode="intersects", uplift_model=None):
+    """
+    uplift_model: optional backend/uplift.py model (see UPLIFT_MODEL_SPEC.md).
+    When given it takes precedence and tilt_azimuth/tilt_factor are ignored by
+    the tilt math; when None the basic linear model is built from them, and the
+    output is identical to what this function produced before uplift models.
+    """
     print("--- Starting GIA Processing ---")
+
+    range_check = uplift_model is not None
+    if uplift_model is None:
+        uplift_model = linear_planar_model(tilt_azimuth, tilt_factor)
 
     # Ensure the output directory exists, and start from a clean output file.
     # write_dem_to_gpkg/write_dem_to_gpkg_windowed each guard against a stale
@@ -103,10 +120,25 @@ def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
     band_count = io_strategy["band_count"]
     width, height = io_strategy["width"], io_strategy["height"]
 
+    # Warnings that depend on the DEM's extent (which a model can't know when
+    # it's built): e.g. a concave-down profile whose gradient changes sign
+    # within the DEM's forward range. Skipped for the basic linear model,
+    # whose gradient is constant. The raster is the API layer's WGS84 working
+    # copy, per this package's CRS-naive contract.
+    if range_check and hasattr(uplift_model, "warn_for_range"):
+        with rasterio.open(file_path) as src:
+            bounds = list(src.bounds)
+        d_min, d_max = uplift_d_range_km(uplift_model, origin_coords, bounds)
+        uplift_model.warn_for_range(d_min, d_max)
+
+    # The uplift model's own evaluation temporaries (e.g. Horner's ~2 float64
+    # arrays for a degree>=2 polynomial) come on top of the base tilt cost.
+    tilt_bytes_per_pixel = TILT_BYTES_PER_PIXEL + uplift_model.extra_bytes_per_pixel
+
     #Route execution branch based on the configuration flag
     if io_strategy["use_windowed_io"]:
         print("ALERT: File memory footprint exceeds safe RAM threshold. Using windowed pipeline.")
-        tilt_tile_size = largest_safe_tile_size(width, height, free_ram, TILT_BYTES_PER_PIXEL)
+        tilt_tile_size = largest_safe_tile_size(width, height, free_ram, tilt_bytes_per_pixel)
         contour_tile_size = largest_safe_tile_size(width, height, free_ram, CONTOUR_BYTES_PER_PIXEL)
         gpkg_tile_size = largest_safe_tile_size(width, height, free_ram, GPKG_WRITE_BYTES_PER_PIXEL)
         with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tmp:
@@ -114,7 +146,7 @@ def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
         try:
             tilted_path, tilted_transform, crs = tilt_DEM_windowed(
                 file_path, tilted_path, origin_coords, tilt_azimuth, tilt_factor,
-                tile_size=tilt_tile_size,
+                tile_size=tilt_tile_size, uplift_model=uplift_model,
             )
             contours = extract_strandline_contours_windowed(
                 tilted_path, target_elevation, tile_size=contour_tile_size,
@@ -129,9 +161,10 @@ def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
         print("PASS: File is safe for standard in-memory operations.")
         dem_array, transform, crs = load_DEM(file_path, needs_casting, band_count)
         print(f"Successfully loaded array with shape {dem_array.shape} into system memory.")
-        chunk_rows = largest_safe_tile_size(width, height, free_ram, TILT_BYTES_PER_PIXEL)
+        chunk_rows = largest_safe_tile_size(width, height, free_ram, tilt_bytes_per_pixel)
         tilted_array = calculate_tilt(
             dem_array, transform, origin_coords, tilt_azimuth, tilt_factor, chunk_rows=chunk_rows,
+            uplift_model=uplift_model,
         )
         contours = extract_strandline_contours(tilted_array, transform, target_elevation)
         if include_dem:

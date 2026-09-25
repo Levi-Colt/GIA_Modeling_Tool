@@ -7,6 +7,18 @@ import { useProcessing } from '../../context/ProcessingContext.jsx'
 // field goes disabled, or as a silent no-op when a typed value gets
 // discarded server-side.
 export function TargetElevationField() {
+  return (
+    <div>
+      <TargetElevationInput />
+      <p className="mt-1 text-xs text-gray-500">
+        Strandlines are extracted at the spillway's present elevation, assuming the sill hasn't changed
+        since the shoreline formed.
+      </p>
+    </div>
+  )
+}
+
+function TargetElevationInput() {
   const { formState, updateForm } = useProcessing()
   const { elevationCheckStatus, elevationCheckValue, targetElevation } = formState
 
@@ -59,33 +71,36 @@ export function TargetElevationField() {
 }
 
 // Azimuth and tilt-factor inputs, shared by both modes. In Advanced these are
-// labelled "Single azimuth" / "Gradient at origin (m/km)" -- the same two
+// labelled "Single azimuth" / "Gradient at spillway (m/km)" -- the same two
 // top-level formState keys either way, so a value typed in one mode shows up
 // in the other.
-export function TiltInputs({ azimuthLabel = 'Azimuth (deg)', factorLabel = 'Tilt (m/km)' }) {
+export function TiltInputs({ azimuthLabel = 'Azimuth (deg)', factorLabel = 'Tilt (m/km)', factorHelp = null }) {
   const { formState, updateForm } = useProcessing()
   return (
-    <div className="grid grid-cols-2 gap-2">
-      <label className="block text-xs text-gray-500">
-        {azimuthLabel}
-        <input
-          type="number"
-          placeholder="Azimuth (deg)"
-          value={formState.tiltAzimuth}
-          onChange={(e) => updateForm({ tiltAzimuth: e.target.value })}
-          className="mt-1 w-full"
-        />
-      </label>
-      <label className="block text-xs text-gray-500">
-        {factorLabel}
-        <input
-          type="number"
-          placeholder="Tilt (m/km)"
-          value={formState.tiltFactor}
-          onChange={(e) => updateForm({ tiltFactor: e.target.value })}
-          className="mt-1 w-full"
-        />
-      </label>
+    <div>
+      <div className="grid grid-cols-2 gap-2">
+        <label className="block text-xs text-gray-500">
+          {azimuthLabel}
+          <input
+            type="number"
+            placeholder="Azimuth (deg)"
+            value={formState.tiltAzimuth}
+            onChange={(e) => updateForm({ tiltAzimuth: e.target.value })}
+            className="mt-1 w-full"
+          />
+        </label>
+        <label className="block text-xs text-gray-500">
+          {factorLabel}
+          <input
+            type="number"
+            placeholder="Tilt (m/km)"
+            value={formState.tiltFactor}
+            onChange={(e) => updateForm({ tiltFactor: e.target.value })}
+            className="mt-1 w-full"
+          />
+        </label>
+      </div>
+      {factorHelp && <p className="mt-1 text-xs text-gray-500">{factorHelp}</p>}
     </div>
   )
 }

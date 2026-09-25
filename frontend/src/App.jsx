@@ -10,6 +10,7 @@ import LoadingState from './components/results/LoadingState.jsx'
 import ResultsSuccess from './components/results/ResultsSuccess.jsx'
 import ResultsError from './components/results/ResultsError.jsx'
 import { runProcess } from './api/client.js'
+import { useProfilePreview } from './hooks/useProfilePreview.js'
 import { azimuthLine as computeAzimuthLine } from './utils/geometry.js'
 import { getReadiness, isReadyToRun, parseSelectionRadiusKm } from './utils/readiness.js'
 import { buildProcessPayload } from './utils/payload.js'
@@ -75,6 +76,9 @@ function ProcessingPage() {
   const [focusRequest, setFocusRequest] = useState(null)
   const bodyRef = useRef(null)
   const { ready, missingText } = getReadiness(formState)
+  // Keeps formState.profilePreview current for the tilt-model chart and the
+  // results screen's hinge summary, whichever view is showing.
+  useProfilePreview()
 
   async function handleRunModel() {
     if (!isReadyToRun(formState)) return

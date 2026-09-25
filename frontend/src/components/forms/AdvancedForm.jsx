@@ -3,7 +3,8 @@ import { useProcessing } from '../../context/ProcessingContext.jsx'
 import CollapsibleSection from '../shared/CollapsibleSection.jsx'
 import UploadStep from '../steps/UploadStep.jsx'
 import { CoordinateModeStep, CoordinatesStep } from '../steps/CoordinateSteps.jsx'
-import { TargetElevationField, TiltInputs, ProductsStep } from '../steps/TiltAndProductsSteps.jsx'
+import { TargetElevationField, ProductsStep } from '../steps/TiltAndProductsSteps.jsx'
+import TiltModelBody from '../advanced/TiltModelBody.jsx'
 import { getReadiness, parseSelectionRadiusKm } from '../../utils/readiness.js'
 import { STEPS, scrollToStep } from '../../utils/steps.js'
 
@@ -13,18 +14,6 @@ function formatAzimuth(value) {
   if (!Number.isFinite(n)) return `${value}°`
   const [whole, frac] = String(Math.abs(n)).split('.')
   return `${n < 0 ? '-' : ''}${whole.padStart(3, '0')}${frac ? `.${frac}` : ''}°`
-}
-
-// The Tilt model section body.
-//
-// EXTENSION POINT: this is the one place later specs grow the tilt model --
-// the direction-source switch, profile families, vectors, and shore points all
-// mount here, reading/writing formState.advanced via updateAdvanced. Until
-// then it offers exactly Basic's two inputs (the same top-level `tiltAzimuth` /
-// `tiltFactor` keys, so values carry across modes). Do not add disabled or
-// "coming soon" controls.
-function TiltModelBody() {
-  return <TiltInputs azimuthLabel="Single azimuth" factorLabel="Gradient at origin (m/km)" />
 }
 
 // Advanced mode: the same inputs as Basic in four collapsible sections
@@ -65,6 +54,7 @@ export default function AdvancedForm({ focusRequest }) {
   })
 
   const { preflightStatus, resolvedOrigin, tiltAzimuth, tiltFactor, selectionRadiusKm, includeDem } = formState
+  const family = formState.advanced.profile?.family ?? 'linear'
   const radiusKm = parseSelectionRadiusKm(selectionRadiusKm)
 
   const originNeeds = needs('origin')
@@ -100,7 +90,7 @@ export default function AdvancedForm({ focusRequest }) {
       title: 'Tilt model',
       status: {
         complete: needs('tilt').length === 0,
-        summary: `${formatAzimuth(tiltAzimuth)} · ${tiltFactor} m/km`,
+        summary: `${formatAzimuth(tiltAzimuth)} · ${tiltFactor} m/km${family === 'linear' ? '' : ` · ${family}`}`,
         mono: true,
         needs: needs('tilt')
       },

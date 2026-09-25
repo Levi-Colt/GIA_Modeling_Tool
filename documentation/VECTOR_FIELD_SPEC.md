@@ -1,5 +1,14 @@
 # GIA Modeling Tool — Vector Direction Field Spec
 
+> **Amended by `UPLIFT_MODEL_CORRECTIONS_SPEC.md` (spec 4a): hinge modes,
+> quadratic input forms, and user-facing text. Where they conflict, 4a
+> wins.** Concretely: the hinge is `origin | distance | none` (default
+> `origin` for every family; the zero-gradient point is a *guard*, not a
+> hinge), a custom `quadratic` takes either a rate of increase or a second
+> gradient, and every user-facing label, help text and message is
+> location-agnostic and spillway-anchored. The edits to E1 Step 5, E3 and E4
+> below apply this, so spec 5 isn't implemented against stale text.
+
 Spec 5 of the Sep 2026 feature set (structural). It touches the backend, API,
 and frontend, including map editing. Implement after `UPLIFT_MODEL_SPEC.md`
 (spec 4). It adds a new `UpliftModel` implementation behind that spec's
@@ -125,8 +134,10 @@ consistent isobase pattern, and E1.6 reports how close it is.
 ### Step 5: uplift U
 
 **Case A: every vector uses the global profile.** Then `U = profile.U(max(φ, d_h))`,
-using spec 4's `PolynomialProfile` and its hinge `d_h` computed exactly as in
-spec 4. This is exact, and no second solve is needed.
+using spec 4's `PolynomialProfile` and its hinge `d_h`, resolved exactly as in
+spec 4 as amended by 4a G1 (the mode's point, then the zero-gradient guard:
+`PolynomialProfile.resolve_hinge`). This is exact, and no second solve is
+needed.
 
 **Case B: at least one vector has a custom tilt.** Build a gradient-magnitude
 field and integrate it (pass 2).
@@ -139,11 +150,17 @@ field and integrate it (pass 2).
      equals `g_i` at the vector.
 2. **Gradient field:** `G(x) = Σ w_i(x) G_i(φ(x)) / Σ w_i(x)`, using the same
    weights as Step 3.
-3. **Hinge, in gradient form.** Where φ is behind the global hinge (`φ < d_h`),
-   set `G = 0`. Where φ < 0 and `G < 0`, set `G = 0`; that's the monotonicity
-   guard, so uplift never re-increases behind the spillway. The global
-   profile's hinge mode applies to the whole field. The `origin` default for
-   linear means `G = 0` for φ < 0.
+3. **Hinge, in gradient form** (4a G1 modes). The global profile's hinge
+   mode applies to the whole field:
+   - `origin` (the default, for every family): `G = 0` wherever φ < 0.
+   - `distance`: `G = 0` wherever `φ < −distance_km`.
+   - `none`: no mode clamp; the field continues behind the spillway.
+
+   In every mode the guard also applies: where φ < 0 and `G < 0`, set
+   `G = 0`, so uplift never re-increases behind the spillway. With `none`, that
+   means only the guard applies (`G ≥ 0` behind the spillway). When the guard,
+   not the mode, sets a clamp, report it as information (spec 4a's
+   `hinge_source: "guard"`), not a warning.
 4. **Integrate:** solve ∇U ≈ G · v̂ with the same least-squares machinery as
    Step 4, then anchor U(origin) = 0.
 
@@ -221,10 +238,19 @@ with a `uplift_m` property.
   "vectors": [
     { "lat": 49.9, "lon": -97.2, "azimuth_deg": 28, "range_km": 150, "custom": null },
     { "lat": 52.8, "lon": -99.1, "azimuth_deg": 33, "range_km": null,
-      "custom": { "family": "quadratic", "local_gradient": 0.647, "rate_of_increase": 0.00146 } }
+      "custom": { "family": "quadratic", "local_gradient": 0.6,
+                  "second_gradient": { "gradient_m_per_km": 1.0, "distance_km": 120 } } }
   ]
 }
 ```
+
+A custom `quadratic` takes **either** `rate_of_increase` **or**
+`second_gradient` (4a G2: mutually exclusive, exactly one required). Here
+`second_gradient` is relative to the vector's own location, so the API converts
+with `k_i = (gradient_m_per_km − local_gradient) / distance_km` and everything
+downstream (and `run_parameters.json`, which records the form supplied and the
+derived `rate_of_increase`) uses the canonical `k_i`. `distance_km` is measured
+up the uplift direction from the vector's location.
 
 **Validation** (422 on any failure) goes in `api/tilt_model.py`, which gains
 `direction` as a discriminated union on `type`:
@@ -232,8 +258,10 @@ with a `uplift_m` property.
 - 1–200 vectors.
 - `lat` in [−90, 90], `lon` in [−180, 180], `azimuth_deg` in [0, 360).
 - `range_km`, if present, finite and > 0.
-- Custom `family` in `{linear, quadratic}`. `quadratic` requires a finite
-  `rate_of_increase`; `linear` forbids it. `local_gradient` must be finite.
+- Custom `family` in `{linear, quadratic}`. `quadratic` requires exactly one
+  of a finite `rate_of_increase` or a `second_gradient` (`gradient_m_per_km`
+  finite, `distance_km` finite and > 0); `linear` forbids both.
+  `local_gradient` must be finite.
 
 **Relaxed form fields.** For `direction.type != "azimuth"`, `tilt_azimuth` is
 not needed. Make it `Form(None)`.
@@ -299,7 +327,9 @@ advanced: {
   vectors: [                          // persisted
     { id: 'v_…', lat: '', lon: '', azimuthDeg: '', rangeKm: '',
       tilt: 'global',                 // 'global' | 'custom'
-      custom: { family: 'linear', localGradient: '', rateOfIncrease: '' } }
+      custom: { family: 'linear', localGradient: '',
+                curvatureInput: 'secondGradient',   // 4a G2, same as the global profile
+                rateOfIncrease: '', secondGradient: '', secondGradientDistanceKm: '' } }
   ],
   selectedVectorId: null,             // transient (exclude from persistence)
 }
@@ -317,8 +347,12 @@ Keep the fields as strings to match existing input handling. Use stable ids
     (from preview misfits, shown in amber above 15°), and a remove button with
     an `aria-label`.
   - **Custom rows** expand below the row with the family (Linear/Quadratic),
-    local gradient (m/km), and rate (m/km per km, quadratic only). The rate
-    uses the same `e`-notation-friendly text input as spec 4.
+    local gradient (m/km), and, for quadratic, the same **"Curvature from"**
+    control as the global profile (4a G2): *Second gradient* (a gradient, and
+    the distance up the uplift direction from this vector) or *Rate of increase*
+    (m/km per km). Values in the hidden form are kept. The rate uses the same
+    `e`-notation-friendly text input as spec 4. Help text and placeholders
+    follow 4a G3 (generic, units only).
   - **Selection:** selecting a row (focus or click) sets `selectedVectorId`,
     which highlights its arrow on the map, and vice versa.
   - **Above the table:** "+ Add row", "Add on map" (a toggle, see E5), and
@@ -483,11 +517,11 @@ Document this in `CLAUDE.md`. If a test shows they diverge, trust the run.
 - **Single-vector regression:** one vector at the origin, azimuth 28°, global
   linear profile. U on the DEM matches spec 4's `PlanarUpliftModel` within
   1e-6 × the max |U| (grid discretisation, not exactness). Same for quadratic
-  with a natural hinge.
+  with hinge `none` (the guard sets the clamp).
 - **Uniform field:** several vectors, all the same azimuth, give the same
   result as the single-vector case. Misfit is ≈ 0.
 - **Rotating field:** vectors at the west and east ends of a synthetic basin at
-  002.5° and 031° (the Algonquin values). The isobases are curved (their
+  002.5° and 031° (realistic example values, not defaults). The isobases are curved (their
   normals at the two ends match the vectors within 5°), and φ is monotonic
   along a line joining the vectors. RMS misfit is < 5°.
 - **Opposing vectors:** 28° vs 208° adjacent gives a degenerate-fraction
@@ -497,8 +531,9 @@ Document this in `CLAUDE.md`. If a test shows they diverge, trust the run.
 - **Custom asymmetry:** two vectors with the same azimuth but different custom
   gradients. U grows faster on the steeper side, and the isobases are closer
   together there.
-- **Hinge in gradient form:** with an `origin` hinge, U == 0 everywhere
-  φ < 0.
+- **Hinge in gradient form:** with the `origin` hinge (the default), U == 0
+  everywhere φ < 0. With `none`, `G ≥ 0` behind the spillway (only the guard
+  applies).
 - **Windowed vs in-memory** equivalence with a vectors model.
 - **Out-of-extent vector** warning.
 

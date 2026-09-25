@@ -1,6 +1,7 @@
 // Split out from App.jsx so it can be unit-tested without pulling in the
 // rest of App.jsx's module graph (MapPanel -> georaster-layer-for-leaflet,
 // heavy and irrelevant to this pure gating logic).
+import { tiltModelIssues } from './tiltModel.js'
 
 // The optional selection radius (km): '' means "no limit"; anything else must
 // be a finite number > 0. Returns that number, or null when empty/invalid.
@@ -46,9 +47,10 @@ export function getReadiness(formState) {
   }
 
   if (formState.mode === 'advanced') {
-    // Later specs append advanced-only checks here (keyed to 'tilt'). They
-    // must never run for Basic: advanced-only fields can't affect a Basic
-    // run's readiness.
+    // Advanced-only checks (keyed to 'tilt'). They must never run for Basic:
+    // advanced-only fields can't affect a Basic run's readiness. Later specs
+    // (vectors, shore points) append their own here.
+    for (const text of tiltModelIssues(formState.advanced)) need('tilt', text)
   }
 
   return { ready: missing.length === 0, missing, missingText: missing.map((m) => m.text) }

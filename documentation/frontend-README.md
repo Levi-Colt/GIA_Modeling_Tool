@@ -9,6 +9,11 @@ frontend/
   vite.config.js        relative base path — required for jupyter-server-proxy
   src/
     api/client.js        relative-path fetch calls (no leading slash — see comments)
+    hooks/
+      useProfilePreview.js  debounced (400ms) POST /api/profile-preview; keeps the
+                             transient formState.profilePreview current. Mounted
+                             once in ProcessingPage (not in the tilt section), so
+                             it works while that section is collapsed
     context/             ProcessingContext: shared form state + `mode` + the
                           `advanced` namespace (`updateForm`, `updateAdvanced`),
                           carry-forward to localStorage (not presets — separate concern)
@@ -22,6 +27,12 @@ frontend/
                            (lives here, not App.jsx, so it's unit-testable)
       steps.js            STEPS (four sections + their Advanced keys), scrollToStep,
                            classifyErrorStep (backend error text -> section id)
+      tiltModel.js        Advanced uplift-model helpers: parseFiniteNumber (text
+                           inputs, accepts 64.94e-4), hinge-default resolution,
+                           buildTiltModel (the `tilt_model` payload object),
+                           tiltModelIssues (readiness reasons), describeTiltModel
+                           (results-screen line), DEFAULT_PROFILE / DEFAULT_HINGE
+      ticks.js            niceTicks(min, max, count) for the profile chart axes
       geometry.js         client-side azimuth-line math (turf + a hand-rolled
                            haversine/bbox-clip) — no backend call
     components/
@@ -39,6 +50,11 @@ frontend/
                             wrapper/heading of their own): UploadStep,
                             CoordinateModeStep, CoordinatesStep,
                             TargetElevationField, TiltInputs, ProductsStep
+      advanced/
+        TiltModelBody.jsx  the Advanced Tilt-model section body (the extension
+                            point): shared azimuth + gradient inputs, profile
+                            family, family parameters, hinge rule, chart
+        ProfileChart.jsx   hand-rolled SVG uplift-vs-distance preview + warnings
       map/
         MapPanel.jsx       pipeline-agnostic — see "map component contract" in
                            GIA_Tool_Penpot_Spec.md / VISUALIZATION_PIPELINE_SPEC.md.
@@ -73,6 +89,21 @@ frontend/
 - Selection radius (`SELECTION_RADIUS_SPEC.md`) is implemented: optional km
   input in the Output section, a dashed circle on the map, an `X-Selection-Summary`
   banner in the results, and `selection_radius_km` in the process payload.
+- The uplift model / profile families (`UPLIFT_MODEL_SPEC.md`, amended by
+  `UPLIFT_MODEL_CORRECTIONS_SPEC.md`) are implemented in Advanced mode:
+  `TiltModelBody` offers Linear / Quadratic / Polynomial (degree 2-5) profiles
+  and three hinge modes (At spillway (default) / Distance behind spillway /
+  None: continue behind spillway). Gradient at the spillway is the shared
+  `tiltFactor`; a quadratic's curvature is entered either as a second gradient
+  (a gradient at a distance up the uplift direction, the default) or as a rate
+  of increase, via a "Curvature from" control. All text is generic (no
+  basin- or paper-specific content; see `tests/test_no_basin_specific_text.py`).
+  State lives in `advanced.profile` / `advanced.hinge` (persisted; the hinge
+  mode has no `'default'` value, and legacy `'default'` / `'natural'` load as
+  `'origin'`); the `/api/profile-preview` response lives in the transient
+  top-level `profilePreview` key. Advanced runs send a `tilt_model` JSON form field (see
+  `utils/payload.js`); Basic never does. The direction-source switch, vectors
+  and shore points (specs 5/6) mount in `TiltModelBody` too.
 - Presets and the reprojection modal aren't scaffolded yet.
 - Vitest + `@testing-library/react` are configured (`npm test`, config lives
   in `vite.config.js`'s `test` key, setup file at `src/test/setup.js`). Still

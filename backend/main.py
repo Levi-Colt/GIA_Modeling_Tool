@@ -9,6 +9,8 @@ from rasterio.windows import Window
 from shapely.geometry import LineString, Polygon, box, MultiLineString
 from shapely.ops import linemerge
 
+from backend.uplift import linear_planar_model
+
 def check_available_ram_mb():
     """
     Queries the operating system layer dynamically to determine 
@@ -160,7 +162,8 @@ def _warn_if_origin_disconnected(transform, shape, origin_coords):
         )
 
 
-def tilt_DEM_windowed(DEM_path, output_path, origin_coords, tilt_azimuth, tilt_factor, tile_size=512):
+def tilt_DEM_windowed(DEM_path, output_path, origin_coords, tilt_azimuth, tilt_factor, tile_size=512,
+                      uplift_model=None):
     """
     Streams the DEM through uniform tile_size x tile_size windows, applying
     the directional tilt to each tile independently and writing the result
@@ -174,11 +177,19 @@ def tilt_DEM_windowed(DEM_path, output_path, origin_coords, tilt_azimuth, tilt_f
     control over memory footprint if the source happened to have large or
     unusual internal blocks.
 
+    uplift_model behaves as in calculate_tilt: when given it takes precedence
+    and tilt_azimuth/tilt_factor are ignored by the math; when None, the basic
+    linear model is built once here. The same model object is passed to every
+    block -- its hinge was resolved at build time, so per-block work is purely
+    elementwise and needs no global context.
+
     Returns (output_path, transform, crs) to mirror the (array, transform, crs)
     contract load_DEM/calculate_tilt use for the standard, in-memory pipeline —
     the "data" component is a path on disk here instead of an array, since
     avoiding a full in-memory array is the whole point of windowing.
     """
+    if uplift_model is None:
+        uplift_model = linear_planar_model(tilt_azimuth, tilt_factor)
     with rasterio.open(DEM_path) as src:
         _warn_if_origin_disconnected(src.transform, (src.height, src.width), origin_coords)
         # Computed once against the FULL raster's extent, not each block's much
@@ -204,6 +215,7 @@ def tilt_DEM_windowed(DEM_path, output_path, origin_coords, tilt_azimuth, tilt_f
                     tilted_block = calculate_tilt(
                         block, window_transform, origin_coords, tilt_azimuth, tilt_factor,
                         warn_if_disconnected=False, diagonal_km=diagonal_km,
+                        uplift_model=uplift_model,
                     )
                     dst.write(tilted_block, 1, window=window)
     return output_path, out_transform, out_crs
@@ -428,16 +440,16 @@ def _lonlat_grid(transform, row_offset, block_shape):
     return lons, lats
 
 
-def _tilt_block(block, transform, row_offset, origin_coords, tilt_azimuth, tilt_factor,
-                 diagonal_km, geod):
+def _local_en_km(lons, lats, origin_coords, diagonal_km, geod):
     """
-    Computes the tilted elevation for one row-strip (or the whole array, if
-    it isn't being chunked) -- the calibrated flat-plane replacement for the
-    old per-pixel Geod.inv() call (Fix 1b/1c). See calculate_tilt's own
-    docstring for the public contract.
+    (east_km, north_km) of lon/lat arrays relative to the origin, using the
+    calibrated flat-plane scheme the tilt has always used (single calibration
+    at the origin below RECALIBRATION_THRESHOLD_KM, per-row cos-latitude
+    correction above). This is THE local frame: isobases, vectors and
+    shore points (specs 5/6) must be built in it, never in a separately
+    derived projection. lons/lats may be any broadcastable shapes.
     """
     lon0, lat0 = origin_coords
-    lons, lats = _lonlat_grid(transform, row_offset, block.shape)
     m_per_deg_lon0, m_per_deg_lat0 = _local_scale_factors(geod, lon0, lat0)
 
     if diagonal_km < RECALIBRATION_THRESHOLD_KM:
@@ -468,38 +480,84 @@ def _tilt_block(block, transform, row_offset, origin_coords, tilt_azimuth, tilt_
 
     east_km = (lons - lon0) * m_per_deg_lon / 1000.0
     north_km = (lats - lat0) * m_per_deg_lat0 / 1000.0
+    return east_km, north_km
 
-    # Projection of the (east_km, north_km) vector onto the tilt azimuth's own
-    # unit vector -- equivalent to distance * cos(bearing_to_pixel - tilt_azimuth)
-    # from the original per-pixel formula, without needing bearing or distance
-    # as separate quantities.
-    tilt_rad = np.radians(tilt_azimuth)
-    projected_distance_km = east_km * np.sin(tilt_rad) + north_km * np.cos(tilt_rad)
 
-    # This prevents the "south" cells from experiencing any elevation change.
-    projected_distance_km = np.where(projected_distance_km < 0, 0, projected_distance_km)
+def _local_en_to_lonlat(east_km, north_km, origin_coords, diagonal_km, geod):
+    """
+    Exact inverse of _local_en_km. With the per-row correction, the latitude
+    is recovered first (it depends only on north_km), then the longitude with
+    that latitude's scale factor.
+    """
+    lon0, lat0 = origin_coords
+    m_per_deg_lon0, m_per_deg_lat0 = _local_scale_factors(geod, lon0, lat0)
 
-    # Compute elevation adjustments (tilt_factor is in meters per kilometer)
-    elevation_delta = projected_distance_km * tilt_factor
+    lats = lat0 + north_km * 1000.0 / m_per_deg_lat0
+    if diagonal_km < RECALIBRATION_THRESHOLD_KM:
+        m_per_deg_lon = m_per_deg_lon0
+    else:
+        m_per_deg_lon = m_per_deg_lon0 * np.cos(np.radians(lats)) / np.cos(np.radians(lat0))
+    lons = lon0 + east_km * 1000.0 / m_per_deg_lon
+    return lons, lats
 
+
+def uplift_d_range_km(uplift_model, origin_coords, bounds_wgs84, geod=None):
+    """
+    (d_min, d_max) km: the four corners of bounds_wgs84 ([west, south, east,
+    north], degrees) expressed in the tilt's local frame (_local_en_km, the
+    same one the run uses) and projected onto the model's azimuth via its
+    `signed_distance_km`. Shared by process_dem (forward-guard warning) and
+    the API's profile preview, so both see the same range.
+    """
+    if geod is None:
+        geod = Geod(ellps='WGS84')
+    west, south, east, north = bounds_wgs84
+    _, _, dist_m = geod.inv(west, south, east, north)
+    lons = np.array([west, east, west, east], dtype='float64')
+    lats = np.array([south, south, north, north], dtype='float64')
+    east_km, north_km = _local_en_km(lons, lats, origin_coords, dist_m / 1000.0, geod)
+    d = uplift_model.signed_distance_km(east_km, north_km)
+    return float(np.min(d)), float(np.max(d))
+
+
+def _tilt_block(block, transform, row_offset, origin_coords, uplift_model, diagonal_km, geod):
+    """
+    Computes the tilted elevation for one row-strip (or the whole array, if
+    it isn't being chunked) -- the calibrated flat-plane replacement for the
+    old per-pixel Geod.inv() call (Fix 1b/1c). The per-pixel elevation change
+    comes from `uplift_model` (backend/uplift.py); the tilted block is
+    DEM - U. See calculate_tilt's own docstring for the public contract.
+    """
+    lons, lats = _lonlat_grid(transform, row_offset, block.shape)
+    east_km, north_km = _local_en_km(lons, lats, origin_coords, diagonal_km, geod)
+    uplift_m = uplift_model.evaluate(east_km, north_km)
     # Return the newly modified landscape block
-    return block - elevation_delta
+    return block - uplift_m
 
 
 def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_factor,
-                    warn_if_disconnected=True, diagonal_km=None, chunk_rows=None):
+                    warn_if_disconnected=True, diagonal_km=None, chunk_rows=None,
+                    uplift_model=None):
     """
     Applies a directional planar downward tilt across a DEM starting from an origin point.
-    Cells in the direction of the tilt azimuth are adjusted linearly.
-    Cells behind the tilt plane baseline experience zero change.
+    By default (uplift_model=None) that's the basic linear tilt: cells in the
+    direction of the tilt azimuth are lowered linearly by tilt_factor m/km,
+    and cells behind the tilt plane baseline experience zero change.
+
+    uplift_model: an object from backend/uplift.py (`evaluate(east_km,
+    north_km) -> uplift in m`; the tilted DEM is DEM - uplift). When given it
+    takes precedence and tilt_azimuth/tilt_factor are ignored by the math.
+    When None, `linear_planar_model(tilt_azimuth, tilt_factor)` is built
+    internally, and the result is bit-identical to the pre-uplift-model
+    implementation.
 
     Uses a locally-calibrated flat-plane approximation rather than a
     per-pixel ellipsoidal geodesic solve (documentation/PERFORMANCE_OPTIMIZATION_SPEC.md
     Fix 1b) -- max ~9mm deviation from the true per-pixel geodesic answer at a
     44km diagonal, two orders of magnitude below this tool's own precision.
     diagonal_km controls whether that's a single calibration point (below
-    RECALIBRATION_THRESHOLD_KM) or a banded recalibration across concentric
-    distance-bands from the origin (Fix 1c); if not supplied, it's computed
+    RECALIBRATION_THRESHOLD_KM) or a per-row latitude-cosine correction (Fix
+    1c); if not supplied, it's computed
     from `transform`/`DEM_array.shape` -- correct only when those describe
     the FULL raster, not a sub-block, which is why tilt_DEM_windowed computes
     and threads it through explicitly instead of relying on this default.
@@ -522,17 +580,19 @@ def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_facto
     if diagonal_km is None:
         diagonal_km = _raster_diagonal_km(transform, DEM_array.shape, geod=geod)
 
+    if uplift_model is None:
+        uplift_model = linear_planar_model(tilt_azimuth, tilt_factor)
+
     height = DEM_array.shape[0]
     if not chunk_rows or chunk_rows >= height:
-        return _tilt_block(DEM_array, transform, 0, origin_coords, tilt_azimuth, tilt_factor,
-                            diagonal_km, geod)
+        return _tilt_block(DEM_array, transform, 0, origin_coords, uplift_model, diagonal_km, geod)
 
     out = np.empty_like(DEM_array, dtype='float32')
     for row_start in range(0, height, chunk_rows):
         row_end = min(row_start + chunk_rows, height)
         out[row_start:row_end] = _tilt_block(
-            DEM_array[row_start:row_end], transform, row_start, origin_coords, tilt_azimuth,
-            tilt_factor, diagonal_km, geod,
+            DEM_array[row_start:row_end], transform, row_start, origin_coords, uplift_model,
+            diagonal_km, geod,
         )
     return out
 

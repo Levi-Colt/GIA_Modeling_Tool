@@ -258,3 +258,84 @@ def test_rerunning_with_different_parameters_reflects_the_new_run(tmp_path):
     # Different target elevations on this gradient DEM should produce
     # contours at different locations, not accumulate together.
     assert not first_gdf.geometry.iloc[0].equals(second_gdf.geometry.iloc[0])
+
+
+# --- selection radius (documentation/SELECTION_RADIUS_SPEC.md B1) ---
+
+DOME_ORIGIN = (-104.9, 44.9)   # the dome's center
+DOME_TARGET = 700.0            # a ring ~7.5px (~6-8 km) out from the center
+
+
+def _dome_dem(tmp_path, grid=20, pixel=0.01):
+    """Radial dome, so DOME_TARGET contours as a closed ring around DOME_ORIGIN."""
+    transform = from_origin(-105.0, 45.0, pixel, pixel)
+    y, x = np.indices((grid, grid))
+    radius = np.sqrt((x - grid / 2) ** 2 + (y - grid / 2) ** 2)
+    array = (1000.0 - radius * 40.0).astype("float32")
+    return _write_dem(tmp_path / "dome.tif", array, transform)
+
+
+def _run_dome(tmp_path, name="out.gpkg", **kwargs):
+    output_path = str(tmp_path / name)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        app.process_dem(_dome_dem(tmp_path), DOME_ORIGIN, 90, 0.0, DOME_TARGET,
+                        output_path, include_dem=False, **kwargs)
+    return gpd.read_file(output_path, layer="strandline_contour"), [str(w.message) for w in caught]
+
+
+def test_selection_radius_none_matches_omitting_the_argument(tmp_path):
+    omitted, _ = _run_dome(tmp_path, "omitted.gpkg")
+    explicit_none, _ = _run_dome(tmp_path, "none.gpkg", selection_radius_km=None)
+
+    assert len(omitted) >= 1
+    assert [g.wkb for g in omitted.geometry] == [g.wkb for g in explicit_none.geometry]
+
+
+def test_selection_radius_that_reaches_the_ring_keeps_it_whole(tmp_path):
+    unfiltered, _ = _run_dome(tmp_path, "unfiltered.gpkg")
+    filtered, caught = _run_dome(tmp_path, "filtered.gpkg", selection_radius_km=20.0)
+
+    assert [g.wkb for g in filtered.geometry] == [g.wkb for g in unfiltered.geometry]
+    assert not any("selection radius" in m for m in caught)
+
+
+def test_selection_radius_too_small_yields_empty_valid_gpkg_and_warning(tmp_path):
+    filtered, caught = _run_dome(tmp_path, selection_radius_km=1.0)
+
+    assert len(filtered) == 0
+    assert any("Try a larger selection radius" in m for m in caught)
+
+
+def test_selection_radius_empty_result_keeps_dem_layer_when_include_dem_true(tmp_path):
+    output_path = str(tmp_path / "out.gpkg")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        app.process_dem(_dome_dem(tmp_path), DOME_ORIGIN, 90, 0.0, DOME_TARGET,
+                        output_path, include_dem=True, selection_radius_km=1.0)
+
+    assert len(gpd.read_file(output_path, layer="strandline_contour")) == 0
+    with rasterio.open(f"GPKG:{output_path}:modified_dem") as src:
+        assert src.read(1).shape == (20, 20)
+
+
+def test_selection_radius_agrees_between_in_memory_and_windowed_branches(tmp_path, monkeypatch):
+    for radius in (20.0, 1.0):
+        in_memory, _ = _run_dome(tmp_path, f"mem_{radius}.gpkg", selection_radius_km=radius)
+        with monkeypatch.context() as m:
+            _force_windowed(m)
+            # The forced-tiny RAM budget would otherwise pick a degenerate
+            # 1px tile; use tiles small enough that the ring spans several.
+            m.setattr(app, "largest_safe_tile_size", lambda *a, **k: 8)
+            windowed, _ = _run_dome(tmp_path, f"win_{radius}.gpkg", selection_radius_km=radius)
+
+        assert len(in_memory) == len(windowed)
+        assert sum(g.length for g in in_memory.geometry) == pytest.approx(
+            sum(g.length for g in windowed.geometry), rel=1e-3
+        )
+        if radius == 20.0:
+            # Must actually have kept something, or the comparison above
+            # would trivially pass on two empty results.
+            assert len(in_memory) >= 1
+        else:
+            assert len(in_memory) == 0

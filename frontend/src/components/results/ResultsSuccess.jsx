@@ -1,4 +1,5 @@
 import Banner from '../shared/Banner.jsx'
+import { parseSelectionRadiusKm } from '../../utils/readiness.js'
 
 function triggerDownload(blob, filename) {
   const url = URL.createObjectURL(blob)
@@ -12,7 +13,7 @@ function triggerDownload(blob, filename) {
 }
 
 export default function ResultsSuccess({ result, formState, onRunAgain, onAdjustInputs }) {
-  const { blob, filename, reprojectedFrom, warnings, elevationNote } = result
+  const { blob, filename, reprojectedFrom, warnings, elevationNote, selectionSummary } = result
 
   return (
     <div className="space-y-4 py-2">
@@ -30,6 +31,7 @@ export default function ResultsSuccess({ result, formState, onRunAgain, onAdjust
         </Banner>
       )}
       {elevationNote && <Banner variant="info">{elevationNote}</Banner>}
+      {selectionSummary && <Banner variant="info">{selectionSummary}</Banner>}
       {warnings && <Banner variant="warning">{warnings}</Banner>}
 
       <div className="rounded-md border border-gray-200 p-4">
@@ -49,6 +51,8 @@ export default function ResultsSuccess({ result, formState, onRunAgain, onAdjust
       <p className="text-xs text-gray-500">
         Azimuth {formState.tiltAzimuth}&deg; &middot; Tilt {formState.tiltFactor} m/km &middot; Target
         elevation {formState.targetElevation} m
+        {parseSelectionRadiusKm(formState.selectionRadiusKm) !== null &&
+          <> &middot; Radius {formState.selectionRadiusKm} km</>}
       </p>
 
       <div className="flex gap-2">

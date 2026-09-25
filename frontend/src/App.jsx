@@ -12,7 +12,8 @@ import ResultsError from './components/results/ResultsError.jsx'
 import { runProcess } from './api/client.js'
 import { scrollToStep } from './utils/steps.js'
 import { azimuthLine as computeAzimuthLine } from './utils/geometry.js'
-import { isReadyToRun } from './utils/readiness.js'
+import { getReadiness, isReadyToRun, parseSelectionRadiusKm } from './utils/readiness.js'
+import { buildProcessPayload } from './utils/payload.js'
 
 // Derives the map's input-preview shape from form state alone — the
 // extent/origin/demCrs fields come from /api/preflight and
@@ -32,8 +33,14 @@ function deriveMapDataFromForm(formState) {
     azimuthLine = computeAzimuthLine(origin, azimuthDeg, extent)
   }
 
+  // Only once the origin has resolved and the radius is a valid positive
+  // number; shows up as soon as the user types it, before any run.
+  const radiusKm = parseSelectionRadiusKm(formState.selectionRadiusKm)
+  const selectionRadius = origin && radiusKm !== null ? { center: origin, radiusKm } : null
+
   return {
     extent,
+    selectionRadius,
     rasterPreview: formState.rasterPreviewGeoraster
       ? { georaster: formState.rasterPreviewGeoraster }
       : null,
@@ -68,24 +75,12 @@ function classifyErrorStep(message) {
   return null
 }
 
-function buildProcessPayload(formState) {
-  return {
-    ...(formState.demFile ? { dem_file: formState.demFile } : { file_path: formState.demPath }),
-    origin_mode: formState.originMode,
-    origin_value: formState.originValue,
-    ...(formState.originMode === 'epsg' ? { origin_epsg: formState.originEpsg } : {}),
-    tilt_azimuth: formState.tiltAzimuth,
-    tilt_factor: formState.tiltFactor,
-    target_elevation: formState.targetElevation,
-    include_dem: formState.includeDem
-  }
-}
-
 function ProcessingPage() {
   const { formState } = useProcessing()
   // Transient — deliberately not persisted to localStorage like formState,
   // so kept as local state here rather than in ProcessingContext.
   const [runState, setRunState] = useState(IDLE_RUN_STATE)
+  const { ready, missing } = getReadiness(formState)
   const completedIds = []
   if (formState.preflightStatus === 'valid') completedIds.push('upload')
   if (formState.originMode) completedIds.push('mode')
@@ -94,13 +89,13 @@ function ProcessingPage() {
     if (!isReadyToRun(formState)) return
     setRunState({ status: 'running', startedAt: Date.now(), result: null, error: null })
     try {
-      const { blob, contour, tiltedRasterBytes, reprojectedFrom, warnings, elevationSource, elevationNote } =
+      const { blob, contour, tiltedRasterBytes, reprojectedFrom, warnings, elevationSource, elevationNote, selectionSummary } =
         await runProcess(buildProcessPayload(formState))
       const resultMapData = await deriveMapDataFromResult({ contour, tiltedRasterBytes })
       setRunState({
         status: 'success',
         startedAt: null,
-        result: { blob, filename: 'strandlines.gpkg', reprojectedFrom, warnings, elevationSource, elevationNote },
+        result: { blob, filename: 'strandlines.gpkg', reprojectedFrom, warnings, elevationSource, elevationNote, selectionSummary },
         resultMapData,
         error: null
       })
@@ -170,10 +165,15 @@ function ProcessingPage() {
         </div>
         <button
           onClick={handleRunModel}
-          className="mt-4 w-full rounded-md bg-gray-900 py-2 font-medium text-white"
+          disabled={!ready}
+          className="mt-4 w-full rounded-md bg-gray-900 py-2 font-medium text-white
+                     disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500"
         >
           Run model
         </button>
+        {!ready && (
+          <p className="mt-1 text-xs text-gray-500">Still needed: {missing.join(', ')}</p>
+        )}
       </div>
 
       <MapPanel mapData={deriveMapDataFromForm(formState)} azimuthDeg={formState.tiltAzimuth} />

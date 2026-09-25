@@ -92,6 +92,7 @@ export async function runProcess(payload) {
   const warnings = res.headers.get('X-Processing-Warnings')
   const elevationSource = res.headers.get('X-Target-Elevation-Source')
   const elevationNote = res.headers.get('X-Target-Elevation-Note')
+  const selectionSummary = res.headers.get('X-Selection-Summary')
 
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}))
@@ -119,5 +120,5 @@ export async function runProcess(payload) {
     ? files['preview_tilted.tif'].slice().buffer
     : null
 
-  return { blob, contour, tiltedRasterBytes, reprojectedFrom, warnings, elevationSource, elevationNote }
+  return { blob, contour, tiltedRasterBytes, reprojectedFrom, warnings, elevationSource, elevationNote, selectionSummary }
 }

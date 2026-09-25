@@ -28,6 +28,7 @@ def _run(file_path, origin_mode, origin_value, target_elevation, origin_epsg=Non
             tilt_factor=0.0,
             target_elevation=target_elevation,
             include_dem=False,
+            selection_radius_km=None,
         )
         if response.background:
             await response.background()

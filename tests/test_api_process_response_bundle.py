@@ -35,6 +35,7 @@ def _run(file_path, include_dem, target_elevation=450, tilt_factor=0.0):
             tilt_factor=tilt_factor,
             target_elevation=target_elevation,
             include_dem=include_dem,
+            selection_radius_km=None,
         )
         if response.background:
             await response.background()

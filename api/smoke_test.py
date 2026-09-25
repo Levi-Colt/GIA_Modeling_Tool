@@ -66,7 +66,8 @@ def _build_dem_bytes() -> bytes:
 
 DEM_BYTES = _build_dem_bytes()
 
-COMMON_KWARGS = dict(tilt_azimuth=90, tilt_factor=0.0, target_elevation=450, include_dem=True)
+COMMON_KWARGS = dict(tilt_azimuth=90, tilt_factor=0.0, target_elevation=450, include_dem=True,
+                     selection_radius_km=None)
 
 
 async def _run(origin_mode, origin_value, origin_epsg=None):

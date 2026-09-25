@@ -6,7 +6,7 @@ import psutil
 from pyproj import Geod
 from skimage import measure
 from rasterio.windows import Window
-from shapely.geometry import LineString, box, MultiLineString
+from shapely.geometry import LineString, Polygon, box, MultiLineString
 from shapely.ops import linemerge
 
 def check_available_ram_mb():
@@ -610,6 +610,86 @@ def extract_strandline_contours(tilted_DEM, target_elevation):
     contours = measure.find_contours(clean_array, target_elevation)
     return contours
 """
+SELECTION_MODES = ("intersects", "clip")
+
+
+def _flatten_to_lines(geometry):
+    """Flattens a shapely intersection result into non-empty LineStrings,
+    discarding any Point/degenerate pieces (e.g. a line that only touches the
+    clip circle at a single point)."""
+    if geometry.is_empty:
+        return []
+    if isinstance(geometry, LineString):
+        return [geometry]
+    if hasattr(geometry, "geoms"):
+        return [part for g in geometry.geoms for part in _flatten_to_lines(g)]
+    return []
+
+
+def select_contours_within_radius(lines, origin_coords, radius_km,
+                                  mode="intersects", circle_vertices=256):
+    """
+    Filter (and optionally clip) strandline LineStrings to those within
+    radius_km of origin_coords, measured geodesically on WGS84.
+
+    lines: list of shapely LineStrings in lon/lat degrees (the same
+        CRS-naive geographic-degrees contract as the rest of this module --
+        see _raster_diagonal_km's docstring; no reprojection here).
+    mode:
+        "intersects" -- keep a line unchanged if ANY vertex is within
+            radius_km (geodesic distance via one vectorized Geod.inv call
+            per line). Vertex-based is exact to within the contour's own
+            vertex spacing, which is ~pixel-scale by construction
+            (marching squares), so no line-segment/circle math is needed.
+        "clip" -- build the circle as a lon/lat polygon from
+            circle_vertices Geod.fwd bearings around the origin, and
+            return each line's intersection with it (dropping empties and
+            splitting MultiLineStrings into LineStrings via _as_line_list-
+            style normalization). Straight lon/lat edges between 256
+            geodesic vertices are a negligible approximation at this
+            tool's precision.
+    Returns a new list; never mutates the input.
+    Raises ValueError for radius_km <= 0 or non-finite, or unknown mode.
+    """
+    if mode not in SELECTION_MODES:
+        raise ValueError(f"Unknown selection mode '{mode}'. Expected one of {SELECTION_MODES}.")
+    try:
+        radius_km = float(radius_km)
+    except (TypeError, ValueError):
+        raise ValueError(f"radius_km must be a number, got {radius_km!r}.")
+    if not np.isfinite(radius_km) or radius_km <= 0:
+        raise ValueError(f"radius_km must be finite and > 0, got {radius_km}.")
+
+    geod = Geod(ellps='WGS84')
+    lon0, lat0 = origin_coords
+    radius_m = radius_km * 1000.0
+
+    if mode == "intersects":
+        kept = []
+        for line in lines:
+            if line.is_empty:
+                continue
+            coords = np.asarray(line.coords)
+            lons, lats = coords[:, 0], coords[:, 1]
+            _, _, dist_m = geod.inv(
+                np.full_like(lons, lon0), np.full_like(lats, lat0), lons, lats,
+            )
+            if np.min(dist_m) <= radius_m:
+                kept.append(line)
+        return kept
+
+    azimuths = np.linspace(0.0, 360.0, circle_vertices, endpoint=False)
+    circle_lons, circle_lats, _ = geod.fwd(
+        np.full(circle_vertices, lon0), np.full(circle_vertices, lat0),
+        azimuths, np.full(circle_vertices, radius_m),
+    )
+    circle = Polygon(zip(circle_lons, circle_lats))
+    clipped = []
+    for line in lines:
+        clipped.extend(_flatten_to_lines(line.intersection(circle)))
+    return clipped
+
+
 # --- LOCAL TESTING BLOCK ---
 if __name__ == "__main__":
     print("Testing GIA Engine backend components locally...")

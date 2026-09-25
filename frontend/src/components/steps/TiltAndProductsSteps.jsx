@@ -86,7 +86,22 @@ export function ProductsStep() {
   const { formState, updateForm } = useProcessing()
   return (
     <section id="step-products" className="border-t border-gray-100 pt-3">
-      <p className="mb-2 text-xs text-gray-400">5 · Return products</p>
+      <p className="mb-2 text-xs text-gray-400">5 · Output</p>
+      <label className="block text-sm text-gray-600">
+        Selection radius (km, optional)
+        <input
+          type="number"
+          min="0"
+          step="any"
+          placeholder="No limit"
+          value={formState.selectionRadiusKm}
+          onChange={(e) => updateForm({ selectionRadiusKm: e.target.value })}
+          className="mt-1 w-full"
+        />
+      </label>
+      <p className="mb-2 text-xs text-gray-500">
+        Only contours that come within this distance of the origin are kept (whole, not clipped).
+      </p>
       <label className="flex items-center gap-2 text-sm text-gray-600">
         <input
           type="checkbox"

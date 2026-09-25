@@ -60,7 +60,10 @@ Revised:
   origin,              // [lon, lat] — from /api/resolve-point
   azimuthLine,         // [[lon, lat], [lon, lat]] — computed client-side with Turf
   contour,             // GeoJSON FeatureCollection — from /api/process's bundled response
-  tiltedRasterPreview  // { georaster } — parsed from /api/process's bundled preview.tif
+  tiltedRasterPreview, // { georaster } — parsed from /api/process's bundled preview.tif
+  selectionRadius      // { center: [lon, lat], radiusKm } — optional; derived from form state
+                       // (deriveMapDataFromForm), only when origin has resolved and the
+                       // radius is a positive number. Not part of the fit-bounds chain.
 }
 ```
 
@@ -69,9 +72,10 @@ draws them, same principle as before, just a wider shape. It still doesn't
 care whether `contour` came from a live run or `tiltedRasterPreview` is
 absent because `include_dem` was off.
 
-Layer order (bottom to top): `rasterPreview` → `tiltedRasterPreview` (when
+Layer order (bottom to top): basemap (own `basemap` pane below tilePane) →
+`rasterPreview` → `tiltedRasterPreview` (when
 present, replaces the input raster as the visible base rather than
-stacking) → `contour` → `azimuthLine` → `origin` marker → compass rose
+stacking) → `selectionRadius` circle → `contour` → `azimuthLine` → `origin` marker → compass rose
 (fixed UI chrome, not a map layer, always rendered regardless of data).
 
 ## Stage 1 — Input preview (extent, origin, azimuth line)

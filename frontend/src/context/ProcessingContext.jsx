@@ -33,7 +33,10 @@ const defaultState = {
   // it found, so TiltAndProductsSteps.jsx can render accordingly.
   elevationCheckStatus: 'idle', // idle | checking | dem | outside_bounds | nodata
   elevationCheckValue: null,
-  includeDem: true
+  includeDem: true,
+  // Optional (km, kept as the raw input string): '' means no filtering. A
+  // user input, so persisted like the other form fields.
+  selectionRadiusKm: ''
 }
 
 // Carry-forward: silently restores the last run's values on load. This is

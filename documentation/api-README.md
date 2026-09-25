@@ -200,6 +200,27 @@ Interactive docs (request/response schema, try-it-out) are served at `/docs`.
 | `tilt_factor` | float | yes | meters of elevation change per km |
 | `target_elevation` | float | yes | paleo-elevation to contour, meters -- may be overridden server-side, see "Target elevation resolution" below |
 | `include_dem` | bool | no (default `true`) | also embed the tilted DEM as a raster layer |
+| `selection_radius_km` | float | no | keep only strandline contours that come within this many km of the resolved origin -- see "Selection radius" below |
+
+## Selection radius
+
+When `selection_radius_km` is present, only strandline contours that come
+within that distance of the origin (geodesic, WGS84) are written to the
+output GeoPackage, so the `contour.geojson` in the zip -- read back from the
+filtered `.gpkg` -- matches the download. Empty or absent means no
+filtering, identical to a run without the field.
+
+- **Keep-whole ("intersects") semantics:** a contour is kept, entire and
+  unclipped, if any part of it comes within the radius; contours entirely
+  outside are dropped. (`backend/main.py::select_contours_within_radius`
+  also supports a `"clip"` mode that trims contours at the circle's edge, but
+  it's not exposed as a request field.)
+- The origin may lie outside the DEM (within the usual 500 m threshold); the
+  radius works the same way. The tilted DEM raster is not cropped.
+- Must be finite and `> 0`, otherwise `422`.
+- If nothing survives the filter, the request still succeeds: the
+  GeoPackage's contour layer is empty and `X-Processing-Warnings` says so
+  (with the pre-filter total).
 
 ## Origin modes
 
@@ -270,7 +291,7 @@ ahead of a full run -- not a second source of truth, and not something
 
 | status | cause |
 |---|---|
-| `422` | neither or both of `dem_file`/`file_path` provided; unsupported file extension; invalid `origin_mode`; missing `origin_epsg` for `epsg` mode; malformed `origin_value`; unrecognized `origin_epsg`; origin more than 500m from the raster's extent; `target_elevation` outside the DEM's elevation range |
+| `422` | neither or both of `dem_file`/`file_path` provided; `selection_radius_km` not finite or not `> 0`; unsupported file extension; invalid `origin_mode`; missing `origin_epsg` for `epsg` mode; malformed `origin_value`; unrecognized `origin_epsg`; origin more than 500m from the raster's extent; `target_elevation` outside the DEM's elevation range |
 | `413` | upload exceeds the configured size limit |
 | `400` | corrupted/unreadable GeoTIFF; `file_path` does not point to an existing file; other file-not-found conditions |
 | `500` | unexpected processing failure |
@@ -288,3 +309,7 @@ A `/api/process` response also carries these headers when applicable:
 - `X-Target-Elevation-Note` -- present only when the source is `"dem"` and
   the submitted `target_elevation` differed from the DEM-sampled value by
   more than a small tolerance; a human-readable explanation of the override.
+- `X-Selection-Summary` -- present only when `selection_radius_km` was
+  supplied: `"N strandline contour(s) kept within R km of the origin."`. `N`
+  counts only what was kept; the pre-filter total appears only in the
+  empty-result warning.

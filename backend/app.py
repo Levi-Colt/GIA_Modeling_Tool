@@ -1,5 +1,6 @@
 import os
 import tempfile
+import warnings
 
 import geopandas as gpd
 from shapely.geometry import LineString, MultiLineString
@@ -13,6 +14,7 @@ from backend.main import (
     extract_strandline_contours,
     tilt_DEM_windowed,
     extract_strandline_contours_windowed,
+    select_contours_within_radius,
     write_dem_to_gpkg,
     write_dem_to_gpkg_windowed,
 )
@@ -73,7 +75,8 @@ def _as_line_list(geometry):
 
 #Simulation of your execution runtime or FastAPI Route handler
 def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
-                 target_elevation, output_gpkg_path, include_dem=True):
+                 target_elevation, output_gpkg_path, include_dem=True,
+                 selection_radius_km=None, selection_mode="intersects"):
     print("--- Starting GIA Processing ---")
 
     # Ensure the output directory exists, and start from a clean output file.
@@ -143,6 +146,23 @@ def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
     # tile's fragment of it.
     lines = [line for line in lines if len(line.coords) >= MIN_CONTOUR_VERTICES]
     lines = [line.simplify(CONTOUR_SIMPLIFY_TOLERANCE_DEG, preserve_topology=False) for line in lines]
+
+    # Optional selection radius: keep only contours near the origin. Applied
+    # here, after the cleanup above and before the GeoDataFrame is built, for
+    # the same reason as Fix 3 -- the windowed branch's fragments must be
+    # judged as fully assembled lines, not per-tile pieces. An empty result
+    # is still written as a valid (empty) layer, with a warning.
+    if selection_radius_km is not None:
+        before = len(lines)
+        lines = select_contours_within_radius(
+            lines, origin_coords, selection_radius_km, mode=selection_mode,
+        )
+        if not lines and before > 0:
+            warnings.warn(
+                f"No strandline contours fall within {selection_radius_km:g} km of the "
+                f"origin ({before} found in the full DEM). Try a larger selection radius.",
+                UserWarning,
+            )
 
     # Contours -> vector layer, same gpkg file either branch
     gdf = gpd.GeoDataFrame(geometry=lines, crs=crs)

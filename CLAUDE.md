@@ -2,7 +2,11 @@
 
 ## Architecture
 - `backend/` (`app.py` / `main.py`): backend geoprocessing pipeline
-  (untouched by the API layer, keeps its existing test suite intact).
+  (the API layer wraps it without reaching into its internals; its existing
+  test suite stays intact). The backend is no longer kept at zero diff: it
+  changes when a feature genuinely belongs there, with new behavior behind
+  defaulted keyword arguments so the basic path stays identical (e.g.
+  `process_dem`'s `selection_radius_km`).
   Entry point: `backend/app.py::process_dem()`. A plain package
   (`backend/__init__.py`) so `api/` can import it as `backend.app` /
   `backend.main` regardless of where a command is invoked from, as long as
@@ -91,7 +95,7 @@
 - Map visualization panel (`frontend/src/components/map/MapPanel.jsx`) is an
   intentionally dumb, pipeline-agnostic component — it never calls into
   geoprocessing logic, just renders whatever `{extent, rasterPreview,
-  origin, azimuthLine, contour, tiltedRasterPreview}` shape it's handed
+  origin, azimuthLine, contour, tiltedRasterPreview, selectionRadius}` shape it's handed
   (vanilla Leaflet, no `react-leaflet`). Input-preview (extent from
   `/api/preflight`, raster from `/api/raster-preview`, origin from
   `/api/resolve-point`, azimuth line computed client-side) and
@@ -100,15 +104,25 @@
   `App.jsx` feeding one renderer, not one that assumes it can show
   everything from day one. See `documentation/GIA_Tool_Penpot_Spec.md` and
   `documentation/VISUALIZATION_PIPELINE_SPEC.md` for the full contract and
-  rationale.
+  rationale. It draws a basemap (USGS Topo or NRCan Canada Base Map) in its
+  own Leaflet `basemap` pane below the raster; `utils/basemap.js` owns the
+  external tile URLs, which are absolute on purpose (fetched by the user's
+  browser, so the relative-routing rule doesn't apply). The basemap is
+  auto-picked once per new DEM extent (center inside the bundled US boundary
+  -> USGS, else NRCan); once the user picks one in the layer control, their
+  choice wins for the rest of the session.
+- Optional selection radius: `select_contours_within_radius` (`backend/main.py`)
+  keeps only contours within N km (geodesic) of the origin, applied in
+  `process_dem` after the vertex-count filter/simplify. Only the keep-whole
+  ("intersects") mode is exposed via the API/UI; the backend's `"clip"` mode
+  is a held-back fallback. `X-Selection-Summary` reports the kept count.
 - `/api/process`'s response is a zip bundle (`.gpkg` + `contour.geojson` +
   optional `preview_tilted.tif`), not a bare `.gpkg` — see
   `documentation/api-README.md`. The two preview artifacts are read back
   from the just-written `.gpkg` (`gpd.read_file` for the vector layer,
   `rasterio` against the GPKG raster table for the DEM) rather than
   threaded out of `backend/app.py::process_dem`'s internals — deliberately,
-  to keep `backend/app.py`/`backend/main.py` at zero diff per the entry
-  above, at the cost of one cheap extra read of already-computed,
+  to keep `process_dem`'s return value unchanged, at the cost of one cheap extra read of already-computed,
   already-small output (not a second pipeline run).
 - Target elevation is DEM-authoritative: when the origin falls inside the
   DEM on valid data, the DEM's own elevation there overrides any submitted

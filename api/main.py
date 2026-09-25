@@ -19,6 +19,7 @@ Run locally with:
 from the repository root.
 """
 import io
+import math
 import os
 import sys
 import warnings
@@ -91,8 +92,19 @@ async def process(
     include_dem: bool = Form(
         True, description="Also embed the tilted DEM as a raster layer in the output"
     ),
+    selection_radius_km: float | None = Form(
+        None, description="Optional: keep only strandline contours within this many km of the origin"
+    ),
 ):
     # --- Validate the input shape and the origin shape up front, before touching disk ---
+    if selection_radius_km is not None and (
+        not math.isfinite(selection_radius_km) or selection_radius_km <= 0
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="selection_radius_km must be a finite number greater than 0.",
+        )
+
     if (dem_file is None) == (file_path is None):
         raise HTTPException(
             status_code=422,
@@ -211,6 +223,7 @@ async def process(
                 target_elevation=effective_target_elevation,
                 output_gpkg_path=output_path,
                 include_dem=include_dem,
+                selection_radius_km=selection_radius_km,
             )
         backend_warnings = [str(w.message) for w in caught]
     except FileNotFoundError as e:
@@ -258,6 +271,11 @@ async def process(
     # computation -- rather than threading extra return values through
     # process_dem() itself, which stays untouched (see CLAUDE.md). ---
     contour_gdf = gpd.read_file(output_path, layer="strandline_contour")
+    if selection_radius_km is not None:
+        headers["X-Selection-Summary"] = (
+            f"{len(contour_gdf)} strandline contour(s) kept within "
+            f"{selection_radius_km:g} km of the origin."
+        )
     zip_buffer = io.BytesIO()
     # ZIP_STORED (no compression), not ZIP_DEFLATED: measured on a real 440MB
     # output, deflate spent ~19s to recover only a 5% size reduction --

@@ -11,6 +11,12 @@ frontend/
     api/client.js        relative-path fetch calls (no leading slash — see comments)
     context/             shared form state, carry-forward (not presets — separate concern)
     utils/
+      basemap.js          BASEMAPS (absolute external tile URLs, by design),
+                           pickBasemapKey(extent) — pure US/non-US test using
+                           assets/us_boundary.json + @turf/boolean-point-in-polygon
+      readiness.js        getReadiness() -> { ready, missing }; isReadyToRun() wraps it
+      payload.js          buildProcessPayload(formState) for POST /api/process
+                           (lives here, not App.jsx, so it's unit-testable)
       geometry.js         client-side azimuth-line math (turf + a hand-rolled
                            haversine/bbox-clip) — no backend call
     components/
@@ -22,7 +28,7 @@ frontend/
                            Vanilla Leaflet (no react-leaflet) wired via
                            useRef/useEffect; renders whatever subset of
                            extent/rasterPreview/origin/azimuthLine/contour/
-                           tiltedRasterPreview it's handed.
+                           tiltedRasterPreview/selectionRadius it's handed.
         CompassRose.jsx    fixed chrome overlay, rotates with tiltAzimuth
 ```
 
@@ -34,6 +40,14 @@ frontend/
   the raster/origin/azimuth-line input preview and the post-run
   contour/tilted-raster result preview. See `VISUALIZATION_PIPELINE_SPEC.md`
   for the full contract and staged build order.
+- Map quality-of-life (`MAP_QOL_SPEC.md`) is implemented: USGS Topo / NRCan
+  Canada Base Map basemaps (auto-picked from the DEM extent, manual choice via
+  the layer control wins for the session), a metric scale bar, attribution,
+  and a Run button that's disabled until the form is ready, with a "Still
+  needed: ..." list. The map is still in the original layout proportion.
+- Selection radius (`SELECTION_RADIUS_SPEC.md`) is implemented: optional km
+  input in step 5 ("Output"), a dashed circle on the map, an `X-Selection-Summary`
+  banner in the results, and `selection_radius_km` in the process payload.
 - Presets and the reprojection modal aren't scaffolded yet.
 - Vitest + `@testing-library/react` are configured (`npm test`, config lives
   in `vite.config.js`'s `test` key, setup file at `src/test/setup.js`). Still

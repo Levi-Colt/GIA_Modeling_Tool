@@ -7,17 +7,16 @@ const MODE_CONFIG = {
   epsg: { placeholder: '"x,y" in the target CRS\'s units', showEpsg: true }
 }
 
+// Bodies only -- section wrappers/headings and the `step-coordinates` id live in
+// BasicForm / AdvancedForm.
 export function CoordinateModeStep() {
   const { formState, updateForm } = useProcessing()
   return (
-    <section id="step-mode" className="border-t border-gray-100 pt-3">
-      <p className="mb-2 text-xs text-gray-400">2 · Coordinate mode</p>
-      <select value={formState.originMode} onChange={(e) => updateForm({ originMode: e.target.value })}>
-        <option value="decimal_degrees">Decimal degrees</option>
-        <option value="match_raster">Match raster</option>
-        <option value="epsg">EPSG code</option>
-      </select>
-    </section>
+    <select value={formState.originMode} onChange={(e) => updateForm({ originMode: e.target.value })}>
+      <option value="decimal_degrees">Decimal degrees</option>
+      <option value="match_raster">Match raster</option>
+      <option value="epsg">EPSG code</option>
+    </select>
   )
 }
 
@@ -93,8 +92,7 @@ export function CoordinatesStep() {
   }
 
   return (
-    <section id="step-coordinates" className="border-t border-gray-100 pt-3">
-      <p className="mb-2 text-xs font-medium text-blue-600">3 · Coordinates</p>
+    <div>
       <input
         type="text"
         placeholder={config.placeholder}
@@ -126,6 +124,6 @@ export function CoordinatesStep() {
           className="mt-2 w-full"
         />
       )}
-    </section>
+    </div>
   )
 }

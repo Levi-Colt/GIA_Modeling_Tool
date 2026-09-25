@@ -11,16 +11,23 @@ export function parseSelectionRadiusKm(value) {
 }
 
 // UX nicety only — not a substitute for the backend's own 422 validation.
-// Returns { ready, missing }, where `missing` is a list of short, user-facing
-// reasons in the order the form asks for them.
+// Returns { ready, missing, missingText }. `missing` is a list of
+// { section, text } reasons in the order the form asks for them, where
+// `section` is an Advanced-form section key ('dem' | 'origin' | 'tilt' |
+// 'output') so each section header can show its own "Needs: ..." line;
+// `missingText` is the plain string list for the footer's "Still needed" line.
 export function getReadiness(formState) {
   const missing = []
-  if (formState.preflightStatus !== 'valid') missing.push('a valid DEM')
-  if (!formState.originValue) missing.push('origin coordinates')
-  if (formState.originMode === 'epsg' && !formState.originEpsg) missing.push('origin EPSG code')
-  if (!formState.tiltAzimuth) missing.push('tilt azimuth')
-  if (!formState.tiltFactor) missing.push('tilt factor')
-  if (!formState.targetElevation) missing.push('target elevation')
+  const need = (section, text) => missing.push({ section, text })
+
+  if (formState.preflightStatus !== 'valid') need('dem', 'a valid DEM')
+  if (!formState.originValue) need('origin', 'origin coordinates')
+  if (formState.originMode === 'epsg' && !formState.originEpsg) need('origin', 'origin EPSG code')
+  if (!formState.tiltAzimuth) need('tilt', 'tilt azimuth')
+  if (!formState.tiltFactor) need('tilt', 'tilt factor')
+  // Target elevation and the origin elevation check both live in the Origin
+  // section (target elevation is DEM-authoritative at the origin).
+  if (!formState.targetElevation) need('origin', 'target elevation')
   // 'checking' means a blur-triggered check is in flight; 'idle' means one
   // hasn't resolved yet for the coordinate currently in the field --
   // either the field was never blurred, or it was edited since the last
@@ -29,15 +36,22 @@ export function getReadiness(formState) {
   // already-edited-away coordinate would otherwise still pass the
   // non-empty check above.
   if (formState.elevationCheckStatus === 'checking') {
-    missing.push('origin elevation check in progress')
+    need('origin', 'origin elevation check in progress')
   } else if (formState.elevationCheckStatus === 'idle') {
-    missing.push('origin elevation check (click out of the coordinate field)')
+    need('origin', 'origin elevation check (click out of the coordinate field)')
   }
   const radius = formState.selectionRadiusKm
   if (radius !== '' && radius != null && parseSelectionRadiusKm(radius) === null) {
-    missing.push('a positive selection radius (or leave it empty)')
+    need('output', 'a positive selection radius (or leave it empty)')
   }
-  return { ready: missing.length === 0, missing }
+
+  if (formState.mode === 'advanced') {
+    // Later specs append advanced-only checks here (keyed to 'tilt'). They
+    // must never run for Basic: advanced-only fields can't affect a Basic
+    // run's readiness.
+  }
+
+  return { ready: missing.length === 0, missing, missingText: missing.map((m) => m.text) }
 }
 
 export function isReadyToRun(formState) {

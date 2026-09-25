@@ -110,7 +110,51 @@
   browser, so the relative-routing rule doesn't apply). The basemap is
   auto-picked once per new DEM extent (center inside the bundled US boundary
   -> USGS, else NRCan); once the user picks one in the layer control, their
-  choice wins for the rest of the session.
+  choice wins for the rest of the session. Sizing: it fills whatever cell
+  `AppLayout` gives it (`relative h-full w-full`, no fixed pixel height or
+  `sticky`) — two thirds of the width and the full viewport height on `lg`+,
+  `h-[55vh]` stacked above the form below 1024px — and a `ResizeObserver`
+  (rAF-debounced) calls `map.invalidateSize()` so Leaflet never shows gray
+  tiles after a resize or the breakpoint switch.
+- Basic/Advanced input modes (`documentation/LAYOUT_AND_MODES_SPEC.md`,
+  frontend only). `components/shared/AppLayout.jsx` is the one page layout
+  for both the form view and the results view (header, form/results column
+  with a pinned mode switch + Run footer and a scrolling body, full-height
+  map); the mode switch is hidden during a run/results. `StepRail` is
+  retired; `utils/steps.js` keeps a four-entry `STEPS` list (upload /
+  coordinates / tilt / products → labels DEM / Origin / Tilt / Output) used
+  for error routing and `ResultsError`'s "Back to..." label. `BasicForm`
+  is a single page of four numbered sections; `AdvancedForm` is the same
+  four sections as `CollapsibleSection`s (status line: check + summary, or
+  "Needs: ..." from `getReadiness`; body mounted only when open except the
+  DEM section, which is `keepMounted` so an in-flight preflight/uncontrolled
+  path input survives collapsing). Both forms use the same `step-*` element
+  ids, so `classifyErrorStep` (now in `utils/steps.js`) is mode-agnostic; the
+  elevation-range error routes to `coordinates` because target elevation
+  lives in the Origin section. State rule (`ProcessingContext`): fields
+  both modes use stay at the top level under their existing names —
+  **`tiltAzimuth` is Advanced's "single azimuth" and `tiltFactor` is
+  Advanced's "gradient at origin"; later specs must reuse those keys, never
+  add duplicates.** Advanced-only fields live in `formState.advanced`
+  (`sectionsOpen` now; profile family/vectors/shore points later), changed
+  via `updateAdvanced(patch)` (shallow merge — pass a whole nested object).
+  **Switching modes changes only `mode` and never clears or rewrites any
+  other field.** `mode` and `advanced` persist through the carry-forward
+  mechanism (deep-merged over defaults on load so keys added later get
+  defaults from older saves; `localStorage.setItem` is try/catch'd — one
+  `console.warn`, in-memory state unaffected); transient advanced state added
+  by later specs must be added to `TRANSIENT_KEYS` in `ProcessingContext.jsx`.
+  `getReadiness` returns `{ ready, missing: [{section, text}], missingText }`
+  (`missingText` feeds the footer's "Still needed" line; `section` is
+  `dem | origin | tilt | output`) and `buildProcessPayload` branches on
+  `mode`; both have a marked `mode === 'advanced'` branch for later specs
+  to append to, and advanced-only fields must never affect a Basic run's
+  readiness or payload. **`TiltModelBody`** (in `AdvancedForm.jsx`) is the
+  single extension point for the tilt-model section: later specs mount the
+  direction-source switch, profile families, vectors, and shore points
+  there. `focusRequest` (`{ id, n }`, in `ProcessingPage`) is how error
+  routing reaches the forms: Basic scrolls, Advanced opens the section
+  first and then scrolls; it is cleared on mode switches.
 - Optional selection radius: `select_contours_within_radius` (`backend/main.py`)
   keeps only contours within N km (geodesic) of the origin, applied in
   `process_dem` after the vertex-count filter/simplify. Only the keep-whole

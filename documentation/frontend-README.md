@@ -9,19 +9,36 @@ frontend/
   vite.config.js        relative base path — required for jupyter-server-proxy
   src/
     api/client.js        relative-path fetch calls (no leading slash — see comments)
-    context/             shared form state, carry-forward (not presets — separate concern)
+    context/             ProcessingContext: shared form state + `mode` + the
+                          `advanced` namespace (`updateForm`, `updateAdvanced`),
+                          carry-forward to localStorage (not presets — separate concern)
     utils/
       basemap.js          BASEMAPS (absolute external tile URLs, by design),
                            pickBasemapKey(extent) — pure US/non-US test using
                            assets/us_boundary.json + @turf/boolean-point-in-polygon
-      readiness.js        getReadiness() -> { ready, missing }; isReadyToRun() wraps it
+      readiness.js        getReadiness() -> { ready, missing: [{section, text}],
+                           missingText }; isReadyToRun() wraps it
       payload.js          buildProcessPayload(formState) for POST /api/process
                            (lives here, not App.jsx, so it's unit-testable)
+      steps.js            STEPS (four sections + their Advanced keys), scrollToStep,
+                           classifyErrorStep (backend error text -> section id)
       geometry.js         client-side azimuth-line math (turf + a hand-rolled
                            haversine/bbox-clip) — no backend call
     components/
-      shared/StepRail.jsx  anchor nav, never gates a step
-      steps/               one component per form step (1-5)
+      shared/
+        AppLayout.jsx      page layout for form + results views: header, form
+                            column (mode switch / scrolling body / pinned footer),
+                            full-height map; stacks below 1024px
+        ModeSwitch.jsx     Basic/Advanced segmented control (changes only `mode`)
+        CollapsibleSection.jsx  Advanced section: header button + status line
+      forms/
+        BasicForm.jsx      four numbered sections on one scrolling page
+        AdvancedForm.jsx   the same four as collapsible sections; TiltModelBody
+                            is the extension point for the later modeling specs
+      steps/               body components the two forms share (no section
+                            wrapper/heading of their own): UploadStep,
+                            CoordinateModeStep, CoordinatesStep,
+                            TargetElevationField, TiltInputs, ProductsStep
       map/
         MapPanel.jsx       pipeline-agnostic — see "map component contract" in
                            GIA_Tool_Penpot_Spec.md / VISUALIZATION_PIPELINE_SPEC.md.
@@ -44,9 +61,17 @@ frontend/
   Canada Base Map basemaps (auto-picked from the DEM extent, manual choice via
   the layer control wins for the session), a metric scale bar, attribution,
   and a Run button that's disabled until the form is ready, with a "Still
-  needed: ..." list. The map is still in the original layout proportion.
+  needed: ..." list.
+- Layout and modes (`LAYOUT_AND_MODES_SPEC.md`) are implemented: the map takes
+  two thirds of the width and the full height; `StepRail` is retired; a
+  Basic/Advanced switch tops the form column. Advanced is a shell — the same
+  inputs as Basic in collapsible sections ("Single azimuth" / "Gradient at
+  origin" are the shared `tiltAzimuth` / `tiltFactor`), with a `TiltModelBody`
+  extension point for the uplift-model, vector-field and shore-point specs.
+  Both modes' values are kept in state and persisted; switching never clears
+  anything. Target elevation moved into the Origin section.
 - Selection radius (`SELECTION_RADIUS_SPEC.md`) is implemented: optional km
-  input in step 5 ("Output"), a dashed circle on the map, an `X-Selection-Summary`
+  input in the Output section, a dashed circle on the map, an `X-Selection-Summary`
   banner in the results, and `selection_radius_km` in the process payload.
 - Presets and the reprojection modal aren't scaffolded yet.
 - Vitest + `@testing-library/react` are configured (`npm test`, config lives

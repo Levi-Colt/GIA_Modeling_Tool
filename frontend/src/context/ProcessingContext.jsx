@@ -1,8 +1,11 @@
-import { createContext, useContext, useState } from 'react'
+import { createContext, useContext, useRef, useState } from 'react'
 
 const STORAGE_KEY = 'gia-tool:last-run'
 
 const defaultState = {
+  // 'basic' | 'advanced' -- persisted. Switching only ever changes this key;
+  // see documentation/LAYOUT_AND_MODES_SPEC.md C2.
+  mode: 'basic',
   demFile: null,
   demPath: '',
   preflightStatus: 'idle', // idle | checking | valid | invalid
@@ -36,7 +39,48 @@ const defaultState = {
   includeDem: true,
   // Optional (km, kept as the raw input string): '' means no filtering. A
   // user input, so persisted like the other form fields.
-  selectionRadiusKm: ''
+  selectionRadiusKm: '',
+  // Advanced-only fields. Anything both modes use stays at the top level under
+  // its existing name (tiltAzimuth = Advanced's "single azimuth", tiltFactor =
+  // Advanced's "gradient at origin") -- later specs must reuse those keys, not
+  // add duplicates here. Persisted; transient advanced state (e.g. a fitted
+  // surface or validation response) must be added to TRANSIENT_KEYS below.
+  advanced: {
+    sectionsOpen: { dem: true, origin: true, tilt: true, output: false }
+  }
+}
+
+// Keys never written to localStorage: file objects and transient
+// preflight/elevation-check/resolve-point status, all re-derived from a fresh
+// preflight/blur and not safe to carry forward stale across a reload.
+const TRANSIENT_KEYS = [
+  'demFile',
+  'preflightStatus',
+  'preflightMessage',
+  'boundsWgs84',
+  'demCrs',
+  'rasterPreviewGeoraster',
+  'elevationCheckStatus',
+  'elevationCheckValue',
+  'resolveOriginStatus',
+  'resolvedOrigin'
+]
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+// defaults <- saved, recursing into plain objects, so keys added to `advanced`
+// (or to sectionsOpen) by later specs get their defaults when an older save
+// loads. Arrays and scalars in `saved` replace the default wholesale.
+function deepMerge(defaults, saved) {
+  if (!isPlainObject(defaults)) return saved
+  if (!isPlainObject(saved)) return defaults // absent/corrupt save: keep defaults
+  const out = { ...defaults }
+  for (const key of Object.keys(saved)) {
+    out[key] = key in defaults ? deepMerge(defaults[key], saved[key]) : saved[key]
+  }
+  return out
 }
 
 // Carry-forward: silently restores the last run's values on load. This is
@@ -45,7 +89,10 @@ const defaultState = {
 function loadCarriedForwardState() {
   try {
     const saved = window.localStorage.getItem(STORAGE_KEY)
-    return saved ? { ...defaultState, ...JSON.parse(saved) } : defaultState
+    if (!saved) return defaultState
+    const parsed = JSON.parse(saved)
+    // Only `advanced` needs a deep merge; the rest is a flat spread.
+    return { ...defaultState, ...parsed, advanced: deepMerge(defaultState.advanced, parsed.advanced) }
   } catch {
     return defaultState
   }
@@ -55,34 +102,41 @@ const ProcessingContext = createContext(null)
 
 export function ProcessingProvider({ children }) {
   const [formState, setFormState] = useState(loadCarriedForwardState)
+  // One console.warn per provider lifetime, not one per keystroke.
+  const persistWarned = useRef(false)
 
-  function updateForm(patch) {
+  // Applies `compute(prev) -> next` and persists the result. Persistence is
+  // best-effort: shore-point tables can exceed the localStorage quota, and a
+  // failed write must never take the app down -- in-memory state is unaffected.
+  function commit(compute) {
     setFormState((prev) => {
-      const next = { ...prev, ...patch }
-      // Persist only the fields worth carrying forward — not file objects
-      // or transient preflight/elevation-check/resolve-point status (the
-      // latter three are re-derived from a fresh preflight/blur, not safe
-      // to carry forward stale across a reload).
-      const {
-        demFile,
-        preflightStatus,
-        preflightMessage,
-        boundsWgs84,
-        demCrs,
-        rasterPreviewGeoraster,
-        elevationCheckStatus,
-        elevationCheckValue,
-        resolveOriginStatus,
-        resolvedOrigin,
-        ...persisted
-      } = next
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted))
+      const next = compute(prev)
+      const persisted = { ...next }
+      for (const key of TRANSIENT_KEYS) delete persisted[key]
+      try {
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted))
+      } catch (err) {
+        if (!persistWarned.current) {
+          persistWarned.current = true
+          console.warn('Could not save form state to localStorage:', err)
+        }
+      }
       return next
     })
   }
 
+  function updateForm(patch) {
+    commit((prev) => ({ ...prev, ...patch }))
+  }
+
+  // Shallow-merges into formState.advanced (callers replacing a nested object,
+  // e.g. sectionsOpen, pass the whole object).
+  function updateAdvanced(patch) {
+    commit((prev) => ({ ...prev, advanced: { ...prev.advanced, ...patch } }))
+  }
+
   return (
-    <ProcessingContext.Provider value={{ formState, updateForm }}>
+    <ProcessingContext.Provider value={{ formState, updateForm, updateAdvanced }}>
       {children}
     </ProcessingContext.Provider>
   )

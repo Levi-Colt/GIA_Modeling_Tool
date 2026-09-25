@@ -68,6 +68,13 @@ if you move into prototyping mode.
 
 ## Screen 2 — Processing (hybrid single-page + step rail + map panel)
 
+> **Superseded (layout and step rail).** `LAYOUT_AND_MODES_SPEC.md` replaced
+> the five-step rail and the two-column proportions below: the step rail is
+> retired (`StepRail.jsx` deleted), the map now takes two thirds of the width
+> and the full viewport height, and the form is a Basic/Advanced pair of forms
+> with four sections (DEM, Origin, Tilt, Output). The rest of this section
+> (map contract, state model, nothing-gated principle) still applies.
+
 **Layout**: two columns. Left column is the form — one scrollable page
 with a horizontal step rail above it acting as an anchor nav (clicking a
 step scrolls to it). Right column is the map panel, `position: sticky` so

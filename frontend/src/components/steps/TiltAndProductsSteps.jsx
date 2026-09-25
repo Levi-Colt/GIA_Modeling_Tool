@@ -6,7 +6,7 @@ import { useProcessing } from '../../context/ProcessingContext.jsx'
 // This just previews that outcome so it doesn't read as a bug when the
 // field goes disabled, or as a silent no-op when a typed value gets
 // discarded server-side.
-function TargetElevationField() {
+export function TargetElevationField() {
   const { formState, updateForm } = useProcessing()
   const { elevationCheckStatus, elevationCheckValue, targetElevation } = formState
 
@@ -58,35 +58,43 @@ function TargetElevationField() {
   )
 }
 
-export function TiltStep() {
+// Azimuth and tilt-factor inputs, shared by both modes. In Advanced these are
+// labelled "Single azimuth" / "Gradient at origin (m/km)" -- the same two
+// top-level formState keys either way, so a value typed in one mode shows up
+// in the other.
+export function TiltInputs({ azimuthLabel = 'Azimuth (deg)', factorLabel = 'Tilt (m/km)' }) {
   const { formState, updateForm } = useProcessing()
   return (
-    <section id="step-tilt" className="border-t border-gray-100 pt-3">
-      <p className="mb-2 text-xs text-gray-400">4 · Tilt parameters</p>
-      <div className="grid grid-cols-3 gap-2">
+    <div className="grid grid-cols-2 gap-2">
+      <label className="block text-xs text-gray-500">
+        {azimuthLabel}
         <input
           type="number"
           placeholder="Azimuth (deg)"
           value={formState.tiltAzimuth}
           onChange={(e) => updateForm({ tiltAzimuth: e.target.value })}
+          className="mt-1 w-full"
         />
+      </label>
+      <label className="block text-xs text-gray-500">
+        {factorLabel}
         <input
           type="number"
           placeholder="Tilt (m/km)"
           value={formState.tiltFactor}
           onChange={(e) => updateForm({ tiltFactor: e.target.value })}
+          className="mt-1 w-full"
         />
-        <TargetElevationField />
-      </div>
-    </section>
+      </label>
+    </div>
   )
 }
 
+// Output-section body (selection radius + include-DEM), shared by both modes.
 export function ProductsStep() {
   const { formState, updateForm } = useProcessing()
   return (
-    <section id="step-products" className="border-t border-gray-100 pt-3">
-      <p className="mb-2 text-xs text-gray-400">5 · Output</p>
+    <div>
       <label className="block text-sm text-gray-600">
         Selection radius (km, optional)
         <input
@@ -110,6 +118,6 @@ export function ProductsStep() {
         />
         Include tilted DEM raster in output
       </label>
-    </section>
+    </div>
   )
 }

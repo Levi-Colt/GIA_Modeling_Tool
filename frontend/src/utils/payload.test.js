@@ -27,6 +27,23 @@ describe('buildProcessPayload', () => {
     })
   })
 
+  it('ignores formState.advanced entirely in Basic mode', () => {
+    const clean = buildProcessPayload({ ...form, mode: 'basic' })
+    const withAdvanced = buildProcessPayload({
+      ...form,
+      mode: 'basic',
+      advanced: { sectionsOpen: { dem: false }, anything: [1, 2, 3] }
+    })
+    expect(withAdvanced).toEqual(clean)
+  })
+
+  it('currently gives Advanced the same payload as Basic', () => {
+    const advancedState = { sectionsOpen: { dem: true } }
+    expect(buildProcessPayload({ ...form, mode: 'advanced', advanced: advancedState })).toEqual(
+      buildProcessPayload({ ...form, mode: 'basic', advanced: advancedState })
+    )
+  })
+
   it('keeps the existing fields', () => {
     expect(buildProcessPayload(form)).toMatchObject({
       file_path: '/data/dem.tif',

@@ -2,6 +2,8 @@ import parseGeoraster from 'georaster'
 import { useProcessing } from '../../context/ProcessingContext.jsx'
 import { runPreflight, rasterPreview } from '../../api/client.js'
 
+// Body only: the section wrapper/heading (and its `step-upload` id) live in
+// BasicForm / AdvancedForm so both modes can reuse this without nested headings.
 // States: idle | checking | valid | invalid — identical for drag-drop and
 // typed path, since both resolve through the same preflight call. See spec:
 // a typed path can't be validated client-side (it points at a server-side
@@ -56,9 +58,7 @@ export default function UploadStep() {
   }
 
   return (
-    <section id="step-upload">
-      <p className="mb-2 text-xs text-gray-400">1 · Upload DEM</p>
-
+    <>
       {preflightStatus === 'valid' ? (
         <div className="flex items-center justify-between rounded-md border border-green-300 px-3 py-3 text-sm">
           <span>
@@ -102,6 +102,6 @@ export default function UploadStep() {
           )}
         </div>
       )}
-    </section>
+    </>
   )
 }

@@ -1,19 +1,19 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import parseGeoraster from 'georaster'
 import { ProcessingProvider, useProcessing } from './context/ProcessingContext.jsx'
-import StepRail from './components/shared/StepRail.jsx'
+import AppLayout from './components/shared/AppLayout.jsx'
+import ModeSwitch from './components/shared/ModeSwitch.jsx'
+import BasicForm from './components/forms/BasicForm.jsx'
+import AdvancedForm from './components/forms/AdvancedForm.jsx'
 import MapPanel from './components/map/MapPanel.jsx'
-import UploadStep from './components/steps/UploadStep.jsx'
-import { CoordinateModeStep, CoordinatesStep } from './components/steps/CoordinateSteps.jsx'
-import { TiltStep, ProductsStep } from './components/steps/TiltAndProductsSteps.jsx'
 import LoadingState from './components/results/LoadingState.jsx'
 import ResultsSuccess from './components/results/ResultsSuccess.jsx'
 import ResultsError from './components/results/ResultsError.jsx'
 import { runProcess } from './api/client.js'
-import { scrollToStep } from './utils/steps.js'
 import { azimuthLine as computeAzimuthLine } from './utils/geometry.js'
 import { getReadiness, isReadyToRun, parseSelectionRadiusKm } from './utils/readiness.js'
 import { buildProcessPayload } from './utils/payload.js'
+import { classifyErrorStep } from './utils/steps.js'
 
 // Derives the map's input-preview shape from form state alone — the
 // extent/origin/demCrs fields come from /api/preflight and
@@ -64,26 +64,17 @@ async function deriveMapDataFromResult({ contour, tiltedRasterBytes }) {
 
 const IDLE_RUN_STATE = { status: 'idle', startedAt: null, result: null, resultMapData: null, error: null }
 
-// Best-effort keyword heuristic over the backend's free-text `detail`
-// strings (there are no typed error codes) — a routing hint for which step
-// to send the user back to, not a correctness-critical classification.
-function classifyErrorStep(message) {
-  const text = (message || '').toLowerCase()
-  if (/extent|origin|500|geodesic/.test(text)) return 'coordinates'
-  if (/elevation range/.test(text)) return 'tilt'
-  if (/file type|corrupted|geotiff|extension/.test(text)) return 'upload'
-  return null
-}
-
 function ProcessingPage() {
   const { formState } = useProcessing()
   // Transient — deliberately not persisted to localStorage like formState,
   // so kept as local state here rather than in ProcessingContext.
   const [runState, setRunState] = useState(IDLE_RUN_STATE)
-  const { ready, missing } = getReadiness(formState)
-  const completedIds = []
-  if (formState.preflightStatus === 'valid') completedIds.push('upload')
-  if (formState.originMode) completedIds.push('mode')
+  // { id, n } -- the form (Basic or Advanced) reacts to a new request by
+  // scrolling to that step's section, opening it first in Advanced. Cleared on
+  // mode switches so a stale request can't re-fire when the other form mounts.
+  const [focusRequest, setFocusRequest] = useState(null)
+  const bodyRef = useRef(null)
+  const { ready, missingText } = getReadiness(formState)
 
   async function handleRunModel() {
     if (!isReadyToRun(formState)) return
@@ -109,30 +100,37 @@ function ProcessingPage() {
     }
   }
 
-  // Resets to idle and, if a step was implicated, scrolls to it once the
-  // form panel is back in the DOM. The scroll target only exists after this
-  // state update re-renders the idle branch below, so it's deferred a tick
-  // rather than run synchronously against the still-mounted results screen.
+  // Resets to idle and, if a step was implicated, asks the (re-mounted) form to
+  // focus it. The form handles the request in an effect, so it runs once the
+  // form is back in the DOM -- and, in Advanced, after opening a collapsed
+  // section.
   function resetRun(stepId) {
     setRunState(IDLE_RUN_STATE)
-    if (stepId) {
-      setTimeout(() => scrollToStep(stepId), 0)
-    }
+    setFocusRequest(stepId ? (prev) => ({ id: stepId, n: (prev?.n ?? 0) + 1 }) : null)
+  }
+
+  function handleModeSwitched() {
+    setFocusRequest(null)
+    requestAnimationFrame(() => bodyRef.current?.scrollTo?.({ top: 0 }))
   }
 
   if (runState.status !== 'idle') {
-    // Same two-column sticky-map layout as the idle form view, so the map
-    // stays visible while a run is loading or its results are shown -- the
-    // result-preview half of the map contract (contour / tiltedRasterPreview)
-    // is inherently tied to this screen, not achievable earlier (see
-    // documentation/VISUALIZATION_PIPELINE_SPEC.md Stage 3 / documentation/GIA_Tool_Penpot_Spec.md).
-    // Carries the input-preview fields (extent/origin/azimuthLine) forward
-    // for context alongside whatever the result adapter produced.
+    // Same layout as the idle form view, so the map stays visible while a run
+    // is loading or its results are shown -- the result-preview half of the
+    // map contract (contour / tiltedRasterPreview) is inherently tied to this
+    // screen, not achievable earlier (see documentation/VISUALIZATION_PIPELINE_SPEC.md
+    // Stage 3 / documentation/GIA_Tool_Penpot_Spec.md). The results panel
+    // replaces the form column and the mode switch is hidden. Carries the
+    // input-preview fields (extent/origin/azimuthLine) forward for context
+    // alongside whatever the result adapter produced.
     const mapData = { ...deriveMapDataFromForm(formState), ...(runState.resultMapData || {}) }
 
     return (
-      <div className="mx-auto grid max-w-5xl grid-cols-[1.3fr_1fr] gap-4 p-6">
-        <div className="rounded-xl border border-gray-200 bg-white p-5">
+      <AppLayout
+        bodyRef={bodyRef}
+        map={<MapPanel mapData={mapData} azimuthDeg={formState.tiltAzimuth} />}
+      >
+        <div className="p-5">
           {runState.status === 'running' && <LoadingState startedAt={runState.startedAt} />}
           {runState.status === 'success' && (
             <ResultsSuccess
@@ -146,38 +144,37 @@ function ProcessingPage() {
             <ResultsError error={runState.error} onBack={() => resetRun(runState.error.stepId)} />
           )}
         </div>
-
-        <MapPanel mapData={mapData} azimuthDeg={formState.tiltAzimuth} />
-      </div>
+      </AppLayout>
     )
   }
 
   return (
-    <div className="mx-auto grid max-w-5xl grid-cols-[1.3fr_1fr] gap-4 p-6">
-      <div className="rounded-xl border border-gray-200 bg-white p-5">
-        <StepRail completedIds={completedIds} currentId="coordinates" />
-        <div className="space-y-3">
-          <UploadStep />
-          <CoordinateModeStep />
-          <CoordinatesStep />
-          <TiltStep />
-          <ProductsStep />
-        </div>
-        <button
-          onClick={handleRunModel}
-          disabled={!ready}
-          className="mt-4 w-full rounded-md bg-gray-900 py-2 font-medium text-white
-                     disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500"
-        >
-          Run model
-        </button>
-        {!ready && (
-          <p className="mt-1 text-xs text-gray-500">Still needed: {missing.join(', ')}</p>
-        )}
-      </div>
-
-      <MapPanel mapData={deriveMapDataFromForm(formState)} azimuthDeg={formState.tiltAzimuth} />
-    </div>
+    <AppLayout
+      bodyRef={bodyRef}
+      modeSwitch={<ModeSwitch onSwitch={handleModeSwitched} />}
+      map={<MapPanel mapData={deriveMapDataFromForm(formState)} azimuthDeg={formState.tiltAzimuth} />}
+      footer={
+        <>
+          <button
+            onClick={handleRunModel}
+            disabled={!ready}
+            className="w-full rounded-md bg-gray-900 py-2 font-medium text-white
+                       disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500"
+          >
+            Run model
+          </button>
+          {!ready && (
+            <p className="mt-1 text-xs text-gray-500">Still needed: {missingText.join(', ')}</p>
+          )}
+        </>
+      }
+    >
+      {formState.mode === 'advanced' ? (
+        <AdvancedForm focusRequest={focusRequest} />
+      ) : (
+        <BasicForm focusRequest={focusRequest} />
+      )}
+    </AppLayout>
   )
 }
 

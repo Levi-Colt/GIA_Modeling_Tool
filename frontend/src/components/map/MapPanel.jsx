@@ -96,7 +96,26 @@ export default function MapPanel({ mapData, azimuthDeg }) {
       if (!autoSwitchingRef.current) manualBasemapRef.current = true
     })
 
+    // The container's size is driven by the page layout (full-height column,
+    // stacked/side-by-side breakpoint), not by Leaflet, so tell Leaflet when it
+    // changes -- otherwise it renders gray tiles after resizes. Debounced to
+    // one call per animation frame.
+    let frame = null
+    let observer = null
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(() => {
+        if (frame !== null) return
+        frame = requestAnimationFrame(() => {
+          frame = null
+          map.invalidateSize()
+        })
+      })
+      observer.observe(containerRef.current)
+    }
+
     return () => {
+      observer?.disconnect()
+      if (frame !== null) cancelAnimationFrame(frame)
       map.remove()
       mapRef.current = null
     }
@@ -220,8 +239,11 @@ export default function MapPanel({ mapData, azimuthDeg }) {
   const hasAnyData = mapData && Object.values(mapData).some(Boolean)
 
   return (
-    <div className="sticky top-4 relative min-h-[340px] overflow-hidden rounded-xl border border-gray-200 bg-gray-50">
-      <div ref={containerRef} className="h-[340px] w-full" />
+    // Fills whatever cell AppLayout gives it (full height beside the form on
+    // wide screens, h-[55vh] when stacked); the ResizeObserver above keeps
+    // Leaflet in sync with that size.
+    <div className="relative h-full w-full overflow-hidden bg-gray-50">
+      <div ref={containerRef} className="h-full w-full" />
       <CompassRose azimuthDeg={azimuthDeg} />
       {!hasAnyData && (
         <div className="pointer-events-none absolute inset-0 z-[500] flex items-center justify-center bg-white/80 p-5 text-center">

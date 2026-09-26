@@ -8,7 +8,7 @@ plus the small preview artifacts the frontend's map panel renders (see
 
 Routes are namespaced under `/api` (`/api/process`, `/api/preflight`,
 `/api/resolve-point`, `/api/raster-preview`, `/api/origin-elevation`,
-`/api/profile-preview`, `/api/uplift-preview`, `/api/health`) so the frontend's relative `api/...` fetches (required for
+`/api/profile-preview`, `/api/uplift-preview`, `/api/fit-uplift-surface`, `/api/health`) so the frontend's relative `api/...` fetches (required for
 `jupyter-server-proxy` compatibility, see `CLAUDE.md`) resolve correctly with
 no path rewriting needed in either the Vite dev proxy or production.
 
@@ -34,6 +34,10 @@ preview_tilted.tif  -- present only when include_dem is true. A small,
                        already-computed output.
 run_parameters.json -- always present, in every mode: what this run used,
                        for reproducibility (see "run_parameters.json" below)
+shore_points.csv    -- present only for a `points` run (spec 6): the points that
+                       were fitted (lat, lon, elevation_m, label, residual_m),
+                       so the bundle alone reproduces the run. Re-importable:
+                       its headers are ones the frontend importer matches.
 ```
 
 `contour.geojson`/`preview_tilted.tif` exist purely to feed the frontend
@@ -198,8 +202,8 @@ Interactive docs (request/response schema, try-it-out) are served at `/docs`.
 | `origin_mode` | string | yes | one of `"match_raster"`, `"decimal_degrees"`, `"epsg"` |
 | `origin_value` | string | yes | format depends on `origin_mode` -- see below |
 | `origin_epsg` | string | only if `origin_mode == "epsg"` | e.g. `"EPSG:32612"` |
-| `tilt_azimuth` | float | yes, unless `tilt_model.direction.type` is `"vectors"` | tilt direction, degrees |
-| `tilt_factor` | float | yes, unless `direction.type` is `"vectors"` and every vector has a custom tilt | meters of elevation change per km, at the spillway -- see "Relaxed fields" below |
+| `tilt_azimuth` | float | yes, unless `tilt_model.direction.type` is `"vectors"` or `"points"` | tilt direction, degrees |
+| `tilt_factor` | float | yes, unless `direction.type` is `"points"`, or `"vectors"` with every vector custom | meters of elevation change per km, at the spillway -- see "Relaxed fields" below |
 | `target_elevation` | float | yes | paleo-elevation to contour, meters -- may be overridden server-side, see "Target elevation resolution" below |
 | `include_dem` | bool | no (default `true`) | also embed the tilted DEM as a raster layer |
 | `selection_radius_km` | float | no | keep only strandline contours that come within this many km of the resolved origin -- see "Selection radius" below |
@@ -277,7 +281,7 @@ rejected, so a typo never silently becomes a default):
 | malformed JSON | `tilt_model must be valid JSON: ...` |
 | not an object | `tilt_model must be a JSON object.` |
 | `version` not `1` | `tilt_model.version must be 1.` |
-| unknown `direction.type` | `tilt_model.direction.type must be one of ['azimuth', 'vectors'].` |
+| unknown `direction.type` | `tilt_model.direction.type must be one of ['azimuth', 'vectors', 'points'].` |
 | unknown key | `tilt_model has an unknown key: '<path>'.` |
 | missing required object/field | `tilt_model.<path> is required.` |
 | unknown family | `tilt_model.profile.family must be one of ['linear', 'quadratic', 'polynomial'].` |
@@ -296,6 +300,7 @@ rejected, so a typo never silently becomes a default):
 | `distance_km` on another mode | `A '<mode>' hinge does not take distance_km.` |
 | non-finite `tilt_azimuth` / `tilt_factor` alongside `tilt_model` | `tilt_azimuth and tilt_factor must be finite numbers.` |
 | `vectors` rules | see "Vector direction field" below |
+| `points` rules | see "Shore-point surface" below |
 
 An `azimuth` (or absent) model is parsed and built before the upload is written
 to disk, so a bad model fails fast. A `vectors` model is *validated* at the same
@@ -407,6 +412,90 @@ identical when the raster is EPSG:4326 and negligibly different when it was
 reprojected (the preflight bounds are the reprojected WGS84 bounds). If they ever
 diverge, trust the run.
 
+## Shore-point surface (`direction.type == "points"`)
+
+For shorelines with elevation data: fit the deformed water plane directly
+instead of describing it with directions and profiles. The user supplies shore
+points (a location and the present elevation of a shoreline feature there); the
+tool fits a **polynomial trend surface** of order 1, 2 or 3 -- a smooth trend,
+not an exact interpolating spline, because real shoreline elevations scatter and
+an exact fit would chase that noise. **Magnitude comes from the data**: no
+profile family, no `tilt_factor`.
+
+```json
+"direction": {
+  "type": "points",
+  "points": [ { "lat": 49.12, "lon": -96.85, "elevation_m": 331.4, "label": "optional site name" }, "..." ],
+  "order": 2,
+  "hinge": "none",              // "none" (default) | "origin"
+  "extrapolation": "warn"       // "warn" (default) | "mask"
+}
+```
+
+The top-level `profile` and `hinge` objects must be **absent**, and neither
+`tilt_azimuth` nor `tilt_factor` is required.
+
+**The math.** In the run's local frame (`backend/main.py::_local_en_km`, with the
+`diagonal_km` of the full raster -- so the fit's frame and the run's are
+identical), point *j* is at `(e_j, n_j)` km with elevation `z_j`. Fit, by
+`numpy.linalg.lstsq`,
+`S(e, n) = sum_{a+b<=p} beta_ab (e/L)^a (n/L)^b`, `L` the largest absolute frame
+coordinate among the points (3, 6 or 10 terms; the constant term is included --
+`S` is an absolute elevation). The uplift is `U = S(e, n) - S(origin)`, so
+`U(origin) = 0` and the DEM-authoritative target elevation still holds; the
+tilted DEM is `DEM - U`. `S` is evaluated analytically per pixel (exact and
+cheap), so windowed and in-memory runs agree. **The isobases the preview shows
+are contours of `S`** (absolute meters a.s.l.); the model itself uses `U`.
+
+**Hinge** (`direction.hinge`): `none` applies `U` as fitted on both sides of the
+spillway (the data define it there); `origin` clamps `U = max(U, 0)`, so nothing
+changes where the surface lies below its value at the spillway.
+
+**Extrapolation** (`direction.extrapolation`): polynomial surfaces diverge
+quickly outside their data. The convex hull of the points is buffered by 10% of
+its diameter (`HULL_BUFFER_FRACTION`, a first-pass value) and rasterized onto the
+DEM (a 1024-cell grid, so a masked edge is not visibly stair-stepped).
+`warn` computes everywhere and warns when more than 20% of the DEM is outside;
+`mask` sets the tilted DEM to NaN outside the hull (no contours there; a warning
+gives the percentage, and a `422` says so if the whole DEM would be masked). Mask
+mode also switches on the contour step's NaN-edge trim
+(`extract_strandline_contours(..., trim_nan_edges=True)`): without it the contour
+that follows a valid/NaN boundary would be drawn along the hull edge. Also warned:
+the origin outside the hull (the surface is extrapolated to it) and a
+near-collinear or clustered set (condition number above 1e8).
+
+**Fit statistics**, per order the point count allows: n, terms, R^2, adjusted
+R^2, RMSE (m), per-point residuals (`z_j - S_j`), standardized residuals
+(`residual / sqrt(SSE / dof)`) and the indexes with `|standardized| > 3` -- shown
+as possible outliers, never removed. (With few degrees of freedom this can never
+exceed 3, so flagging mostly matters for larger sets.) The **minimum point count**
+is `terms + 3`: 6, 9 and 13 for orders 1, 2 and 3.
+
+**Validation** (all `422`):
+
+| rule | `detail` |
+|---|---|
+| `profile` or `hinge` present | `profile and hinge don't apply to shore-point surfaces — magnitude comes from the data.` |
+| `points` missing | `tilt_model.direction.points is required when direction.type is 'points'.` |
+| not 1-5000 points | `tilt_model.direction.points must contain 1 to 5000 points.` |
+| bad lat / lon / elevation | `Shore point N: lat must be between -90 and 90.` / `... lon must be between -180 and 180.` / `... elevation_m must be a finite number.` |
+| bad `label` | `Shore point N: label must be a string.` / `... label must be at most 100 characters.` |
+| `order` not 1, 2 or 3 (a float or bool is not) | `tilt_model.direction.order must be one of [1, 2, 3].` |
+| too few points for the order | `An order-K surface needs at least M shore points (got N); add points or choose a lower order.` |
+| unknown `hinge` / `extrapolation` | `tilt_model.direction.hinge must be one of ['none', 'origin'].` / `... extrapolation must be one of ['warn', 'mask'].` |
+| `points`/`order`/`hinge`/`extrapolation` on another type | `tilt_model.direction.<key> is only allowed when direction.type is 'points'.` |
+| all points at one location | `The shore points must not all be at the same location.` |
+| `mask` would remove every cell | `The DEM lies entirely outside the shore points' buffered hull; masking would remove every cell. ...` |
+
+Duplicate coordinates are allowed (real data has them). Like a `vectors` model, a
+`points` model is *validated* before the upload is written and *built* once the
+working raster exists.
+
+**Diagnostics.** `X-Tilt-Model-Diagnostics` carries
+`{ "order", "r2", "rmse_m", "dem_fraction_outside_hull" }`; `run_parameters.json`
+carries the full fit statistics and coefficients (see below), and the points go
+in `shore_points.csv`.
+
 ## `POST /api/profile-preview`
 
 The uplift-vs-distance curve a run would apply, for the Advanced form's chart.
@@ -483,6 +572,52 @@ lon/lat through `_local_en_to_lonlat`; the spillway's own (`uplift_m: 0`) is
 contoured from `phi`. A build takes about 0.3 s at a typical vector count (about
 0.8 s at the 200-vector maximum), so no reduced preview grid was needed.
 
+## `POST /api/fit-uplift-surface`
+
+The shore-point counterpart of `/api/uplift-preview`: statistics for every order
+the point count allows, residuals, the surface's isobases and the data hull, for
+the map and the tilt section. JSON body, no raster I/O.
+
+```json
+{
+  "points": [ { "lat": 49.12, "lon": -96.85, "elevation_m": 331.4, "label": "optional" }, "..." ],
+  "order": 2,
+  "origin": [-96.9, 49.0],
+  "bounds_wgs84": [-98.0, 48.5, -96.0, 49.5],
+  "hinge": "none",              // optional, default "none"
+  "extrapolation": "warn"       // optional, default "warn"
+}
+```
+
+Validated exactly like a `points` direction (same messages), so a `order` the
+point count cannot support is a `422`. `origin` and `bounds_wgs84` are both
+required (the fit's frame depends on the DEM's extent). The grid is built from
+the bounds with a synthetic 512x512 transform, through the same code a run uses.
+
+```json
+{
+  "orders": [ { "order": 1, "n": 40, "terms": 3, "r2": 0.91, "adj_r2": 0.90, "rmse_m": 4.5 }, "..." ],
+  "selected": { "order": 2, "n": 40, "terms": 6, "r2": 0.98, "adj_r2": 0.97, "rmse_m": 1.9,
+                "cond": 12.3, "residuals_m": [ ... ], "std_residuals": [ ... ], "outlier_indices": [ 7 ] },
+  "isobases": { "inside": { "type": "FeatureCollection", "features": [ ... ] },
+                "outside": { "type": "FeatureCollection", "features": [ ... ] } },   // LineStrings, property `elevation_m`
+  "interval_m": 10,
+  "hull": { "type": "Polygon", "coordinates": [ ... ] },   // the buffered hull, lon/lat
+  "dem_fraction_outside_hull": 0.18,
+  "origin_inside_hull": true,
+  "warnings": [ "..." ]
+}
+```
+
+`orders` covers only the orders the point count allows; `selected` is the
+requested one, and its `residuals_m` are aligned with the submitted points by
+index. Isobases are contours of `S` (absolute meters a.s.l.) at the smallest
+1/2/5 x 10^n giving at most 12 levels over the range `S` takes inside the hull,
+split by the buffered hull: `inside` (solid on the map) and `outside` (dashed;
+always empty in `mask` mode). `cond` is `null` when the design matrix is singular
+(JSON has no Infinity). The other two preview endpoints `422` and point here for
+`points` models.
+
 ## `run_parameters.json`
 
 Every `/api/process` zip carries this file, in every mode (a basic run has
@@ -506,8 +641,12 @@ frontend does not read it.
   },                                     // the derived `rate_of_increase`
   "hinge_km": -40.0,                     // where uplift stops changing, and what set it
   "hinge_source": "guard",               // "mode" | "guard" | null (both null for a basic run)
-  "diagnostics": null,                   // vectors mode only: { case, misfit_deg[], misfit_rms_deg,
-                                         // misfit_max_deg, worst_vector, degenerate_fraction, ranges_km[], grid }
+  "diagnostics": null,                   // vectors mode: { case, misfit_deg[], misfit_rms_deg,
+                                         // misfit_max_deg, worst_vector, degenerate_fraction, ranges_km[], grid };
+                                         // points mode: { type: "points", fit: { order, n, terms, r2, adj_r2, rmse_m, cond,
+                                         // residuals_m[], std_residuals[], outlier_indices[], L_km, coefficients:
+                                         // [{ east_power, north_power, scaled, per_km }] }, orders[], dem_fraction_outside_hull,
+                                         // origin_inside_hull }. `per_km` are the coefficients of S in frame km.
   "include_dem": false,
   "selection_radius_km": null,
   "reprojected": { "was_reprojected": false, "from_crs": null }

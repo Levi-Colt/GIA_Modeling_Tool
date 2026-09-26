@@ -3,6 +3,7 @@ Unit tests for main.extract_strandline_contours.
 """
 import numpy as np
 import pytest
+from rasterio.transform import from_origin
 
 from backend.main import extract_strandline_contours
 
@@ -151,3 +152,50 @@ def test_valid_elevation_matching_nan_fill_sentinel_is_misdetected(standard_tran
 
     contours = extract_strandline_contours(array, transform, target_elevation=-99999.0)
     assert contours == []  # the legitimate boundary is lost, not merely mis-filtered
+
+
+# --- trim_nan_edges (spec 6's mask mode) -----------------------------------------------------
+
+def _half_masked_ramp(cols=100, masked_from=70):
+    """Rises to the east; columns >= masked_from are NaN."""
+    array = np.tile(np.arange(cols, dtype="float32"), (cols, 1))
+    array[:, masked_from:] = np.nan
+    return array, from_origin(0.0, float(cols), 1.0, 1.0)
+
+
+def test_default_keeps_the_contour_that_traces_a_nan_edge():
+    # Pins the behavior trim_nan_edges exists for: the valid/NaN boundary contour sits
+    # ~0.0002 px inside the valid side, rounds onto a valid cell, and is not filtered.
+    array, transform = _half_masked_ramp()
+    contours = extract_strandline_contours(array, transform, target_elevation=50.0)
+    assert sorted(round(c[:, 0].mean(), 1) for c in contours) == [50.5, 69.5]
+
+
+def test_trim_nan_edges_drops_the_edge_contour_and_keeps_the_strandline():
+    array, transform = _half_masked_ramp()
+    contours = extract_strandline_contours(array, transform, target_elevation=50.0, trim_nan_edges=True)
+    assert [round(c[:, 0].mean(), 1) for c in contours] == [50.5]
+    assert len(contours[0]) == 100
+
+
+def test_trim_nan_edges_splits_a_strandline_that_reaches_the_nan_edge():
+    # x + y ramp, contour at 90: it runs from the west edge to the NaN edge at col 70, where
+    # it turns into the same polyline as the edge trace. Only the strandline should remain,
+    # ending short of the NaN cells.
+    array = np.add.outer(np.arange(100.0), np.arange(100.0)).astype("float32")
+    array[:, 70:] = np.nan
+    transform = from_origin(0.0, 100.0, 1.0, 1.0)
+    contours = extract_strandline_contours(array, transform, target_elevation=90.0, trim_nan_edges=True)
+    assert contours
+    for c in contours:
+        # x = pixel index + 0.5 (unit pixels): no vertex past the last valid column (69).
+        assert c[:, 0].max() <= 69.5 + 1e-9
+        assert len(c) >= 2
+
+
+def test_trim_nan_edges_is_a_no_op_without_nan():
+    array = np.tile(np.arange(20, dtype="float32"), (20, 1))
+    transform = from_origin(0.0, 20.0, 1.0, 1.0)
+    a = extract_strandline_contours(array, transform, target_elevation=7.0)
+    b = extract_strandline_contours(array, transform, target_elevation=7.0, trim_nan_edges=True)
+    assert len(a) == len(b) and all(np.array_equal(x, y) for x, y in zip(a, b))

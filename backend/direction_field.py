@@ -172,6 +172,61 @@ def _resolve_ranges(vectors_en, given, frame_diag_km):
     return np.array([default if r is None else float(r) for r in given])
 
 
+def working_grid(raster_transform, raster_shape, origin_coords, geod, grid_cells=GRID_CELLS):
+    """
+    The regular frame grid the vector model (and spec 6's shore-point preview)
+    work on: the DEM's bounding box in the local frame (`_local_en_km`), padded
+    by GRID_PADDING each side, at most `grid_cells` cells on the long side.
+    Returns e0/n0 (frame km of the south-west node), h (node spacing, km),
+    nx/ny, the raster's frame `diagonal_km` and the frame bbox diagonal
+    `frame_diag`, `frame_bbox` (e_min, e_max, n_min, n_max of the DEM itself),
+    `to_frame(lons, lats)` (this run's frame mapping), the node
+    coordinate meshes `grid_e`/`grid_n` (ny, nx) and `origin`.
+    """
+    height, width = raster_shape
+    left, bottom, right, top = rasterio.transform.array_bounds(height, width, raster_transform)
+    diagonal_km = _raster_diagonal_km(raster_transform, raster_shape, geod=geod)
+
+    def to_frame(lons, lats):
+        return _local_en_km(np.asarray(lons, dtype="float64"), np.asarray(lats, dtype="float64"),
+                            origin_coords, diagonal_km, geod)
+
+    # --- The DEM's frame bounding box and the working grid ---
+    ce, cn = to_frame([left, right, left, right], [bottom, bottom, top, top])
+    e_min, e_max, n_min, n_max = float(ce.min()), float(ce.max()), float(cn.min()), float(cn.max())
+    dem_w, dem_h = e_max - e_min, n_max - n_min
+    frame_diag = math.hypot(dem_w, dem_h)
+    pad_e, pad_n = GRID_PADDING * dem_w, GRID_PADDING * dem_h
+    g_e_min, g_n_min = e_min - pad_e, n_min - pad_n
+    g_w, g_h = dem_w + 2 * pad_e, dem_h + 2 * pad_n
+    h = max(g_w, g_h) / grid_cells
+    nx, ny = int(math.ceil(g_w / h)) + 1, int(math.ceil(g_h / h)) + 1
+    e0, n0 = g_e_min, g_n_min
+    node_e = e0 + h * np.arange(nx)
+    node_n = n0 + h * np.arange(ny)
+    grid_e, grid_n = np.meshgrid(node_e, node_n)
+    return {"e0": e0, "n0": n0, "h": h, "nx": nx, "ny": ny, "diagonal_km": diagonal_km,
+            "frame_diag": frame_diag, "frame_bbox": (e_min, e_max, n_min, n_max), "to_frame": to_frame, "grid_e": grid_e, "grid_n": grid_n,
+            "origin": tuple(origin_coords)}
+
+
+def contour_lines_frame(field, level, grid):
+    """Contour lines of `field` (on a working_grid-shaped node grid) at `level`,
+    as (east_km, north_km) array pairs in the local frame."""
+    return [(grid["e0"] + c[:, 1] * grid["h"], grid["n0"] + c[:, 0] * grid["h"])
+            for c in find_contours(field, level)]
+
+
+def contour_lines_lonlat(field, level, grid, geod):
+    """`contour_lines_frame`, mapped back through `_local_en_to_lonlat` into
+    lists of [lon, lat]."""
+    out = []
+    for east, north in contour_lines_frame(field, level, grid):
+        lons, lats = _local_en_to_lonlat(east, north, grid["origin"], grid["diagonal_km"], geod)
+        out.append([[float(x), float(y)] for x, y in zip(lons, lats)])
+    return out
+
+
 def build_vector_uplift_model(vectors, origin_coords, raster_transform, raster_shape,
                               global_profile, hinge=None, grid_cells=GRID_CELLS):
     """
@@ -203,28 +258,12 @@ def build_vector_uplift_model(vectors, origin_coords, raster_transform, raster_s
             raise ValueError("A vector's range_km must be finite and > 0.")
 
     geod = Geod(ellps="WGS84")
-    height, width = raster_shape
-    left, bottom, right, top = rasterio.transform.array_bounds(height, width, raster_transform)
-    diagonal_km = _raster_diagonal_km(raster_transform, raster_shape, geod=geod)
-
-    def to_frame(lons, lats):
-        return _local_en_km(np.asarray(lons, dtype="float64"), np.asarray(lats, dtype="float64"),
-                            origin_coords, diagonal_km, geod)
-
-    # --- The DEM's frame bounding box and the working grid ---
-    ce, cn = to_frame([left, right, left, right], [bottom, bottom, top, top])
-    e_min, e_max, n_min, n_max = float(ce.min()), float(ce.max()), float(cn.min()), float(cn.max())
-    dem_w, dem_h = e_max - e_min, n_max - n_min
-    frame_diag = math.hypot(dem_w, dem_h)
-    pad_e, pad_n = GRID_PADDING * dem_w, GRID_PADDING * dem_h
-    g_e_min, g_n_min = e_min - pad_e, n_min - pad_n
-    g_w, g_h = dem_w + 2 * pad_e, dem_h + 2 * pad_n
-    h = max(g_w, g_h) / grid_cells
-    nx, ny = int(math.ceil(g_w / h)) + 1, int(math.ceil(g_h / h)) + 1
-    e0, n0 = g_e_min, g_n_min
-    node_e = e0 + h * np.arange(nx)
-    node_n = n0 + h * np.arange(ny)
-    grid_e, grid_n = np.meshgrid(node_e, node_n)      # (ny, nx); row index = northward
+    wg = working_grid(raster_transform, raster_shape, origin_coords, geod, grid_cells)
+    diagonal_km, frame_diag = wg["diagonal_km"], wg["frame_diag"]
+    e0, n0, h, nx, ny = wg["e0"], wg["n0"], wg["h"], wg["nx"], wg["ny"]
+    to_frame = wg["to_frame"]
+    e_min, e_max, n_min, n_max = wg["frame_bbox"]
+    grid_e, grid_n = wg["grid_e"], wg["grid_n"]      # (ny, nx); row index = northward
 
     # --- Step 1: vectors into the frame (position, unit direction, range) ---
     lons = np.array([v.lon for v in vectors], dtype="float64")
@@ -426,13 +465,7 @@ def isobases_geojson(model, diagnostics):
     phi = diagnostics["phi_grid"]
 
     def lines(field, level):
-        out = []
-        for contour in find_contours(field, level):
-            rows, cols = contour[:, 0], contour[:, 1]
-            lons, lats = _local_en_to_lonlat(
-                g["e0"] + cols * g["h"], g["n0"] + rows * g["h"], g["origin"], g["diagonal_km"], geod)
-            out.append([[float(x), float(y)] for x, y in zip(lons, lats)])
-        return out
+        return contour_lines_lonlat(field, level, g, geod)
 
     features = []
     interval = _nice_interval(float(u.min()), float(u.max()))

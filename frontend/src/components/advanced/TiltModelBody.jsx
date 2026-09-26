@@ -3,6 +3,7 @@ import { TiltInputs } from '../steps/TiltAndProductsSteps.jsx'
 import ProfileChart from './ProfileChart.jsx'
 import VectorTable from './VectorTable.jsx'
 import VectorFitSummary from './VectorFitSummary.jsx'
+import ShorePointsPanel from './ShorePointsPanel.jsx'
 import { Help, NumberField, Segmented } from './fields.jsx'
 import {
   CURVATURE_INPUTS,
@@ -40,14 +41,15 @@ const GLOBAL_UNUSED_NOTE = 'Global profile not used — every vector has a custo
 // The Tilt model section body.
 //
 // EXTENSION POINT: this is the one place later specs grow the tilt model -- the
-// direction-source switch, the vectors table (spec 5) and, later, shore points
-// mount here, reading/writing formState.advanced via updateAdvanced.
+// direction-source switch, the vectors table (spec 5) and the shore-points panel
+// (spec 6) mount here, reading/writing formState.advanced via updateAdvanced.
 // `tiltFactor` (top level) is the gradient at the spillway in every profile
 // family (the global profile's, in vectors mode); never add a second key for it.
 export default function TiltModelBody() {
   const { formState, updateAdvanced, setMapEditMode } = useProcessing()
   const source = directionSourceOf(formState.advanced)
   const vectorsMode = source === 'vectors'
+  const pointsMode = source === 'points'
   const profile = formState.advanced.profile ?? DEFAULT_PROFILE
   const hinge = formState.advanced.hinge ?? DEFAULT_HINGE
   const { family } = profile
@@ -66,6 +68,17 @@ export default function TiltModelBody() {
     setMapEditMode('none') // leaving vectors mode disarms "Add on map"
   }
   const everyVectorCustom = vectorsMode && allCustom(formState.advanced.vectors ?? [])
+
+  if (pointsMode) {
+    // Magnitude comes from the data: no gradient, profile family or hinge.
+    return (
+      <div className="space-y-3">
+        <Segmented label="Direction source" options={DIRECTION_SOURCES} value={source} onChange={setSource} />
+        <ShorePointsPanel />
+        <p className="text-xs text-gray-500">Magnitude comes from the fitted surface.</p>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-3">

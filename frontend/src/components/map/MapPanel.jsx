@@ -7,15 +7,30 @@ import CompassRose from './CompassRose.jsx'
 import { createVectorLayer } from './VectorLayer.js'
 import { BASEMAPS, DEFAULT_BASEMAP_KEY, pickBasemapKey } from '../../utils/basemap.js'
 import { isobaseLabel } from '../../utils/vectors.js'
+import { elevationLabel } from '../../utils/shorePoints.js'
+import { RESIDUAL_GRADIENT, RESIDUAL_UNKNOWN, residualColor, residualExtent } from '../../utils/colors.js'
 
 // DEM preview opacity: low enough that the basemap reads through it.
 const RASTER_OPACITY = 0.6
 
 // Overlay stacking, bottom to top, per the map contract: raster (tilePane, 200)
-// -> selection radius -> isobases -> contour -> vectors -> azimuth line ->
-// origin. Each gets its own pane so the order never depends on which layer was
-// (re)added last -- editing the vectors must not rebuild the raster.
-const OVERLAY_PANES = { radius: 401, isobases: 402, contour: 403, vectors: 404, azimuth: 405, origin: 406 }
+// -> selection radius -> data hull -> isobases -> contour -> vectors -> shore
+// points -> azimuth line -> origin. (Vectors, points and the azimuth line belong to
+// different direction sources, so they never appear together.) Each gets its own
+// pane so the order never depends on which layer was (re)added last -- editing the
+// vectors must not rebuild the raster.
+const OVERLAY_PANES = {
+  radius: 401,
+  hull: 402,
+  isobases: 403,
+  contour: 404,
+  vectors: 405,
+  points: 406,
+  azimuth: 407,
+  origin: 408
+}
+
+const signed = (r) => `${r > 0 ? '+' : r < 0 ? '−' : ''}${Math.abs(r).toFixed(2)}`
 
 // This component is intentionally "dumb": it never calls into geoprocessing
 // logic and doesn't know what produced its data. It accepts a single shape
@@ -33,6 +48,10 @@ const OVERLAY_PANES = { radius: 401, isobases: 402, contour: 403, vectors: 404, 
 //   vectors?: [{ id, number, lon, lat, azimuthDeg | null, rangeKm | null,
 //                lengthKm, selected, custom }]   // spec 5; drawn as arrows
 //   isobases?: GeoJSON                           // from /api/uplift-preview; LineStrings with `uplift_m`
+//   shorePoints?: [{ id, lon, lat, elevationM, residualM | null, outlier, label }]  // spec 6; render-only
+//   surfaceIsobases?: { inside: GeoJSON, outside: GeoJSON }  // from /api/fit-uplift-surface; LineStrings
+//                                                // with `elevation_m` (m a.s.l.); `outside` is drawn dashed
+//   dataHull?: GeoJSON                           // the data's buffered hull (a Polygon), thin dashed outline
 // }
 //
 // Optional `editing` prop (vectors mode, form view only -- absent on the results
@@ -56,9 +75,10 @@ const OVERLAY_PANES = { radius: 401, isobases: 402, contour: 403, vectors: 404, 
 // Layer order (bottom to top): basemap (its own 'basemap' pane, below
 // tilePane) -> rasterPreview -> tiltedRasterPreview (when present, replaces the
 // input raster as the visible base rather than stacking) -> selectionRadius
-// circle -> isobases (with uplift labels) -> contour -> vectors -> azimuthLine
-// (azimuth mode only) -> origin marker -> compass rose (chrome, drawn as a DOM
-// overlay, not a map layer).
+// circle -> dataHull -> isobases / surfaceIsobases (with labels) -> contour ->
+// vectors -> shorePoints -> azimuthLine (azimuth mode only) -> origin marker ->
+// compass rose and the residual legend (chrome, drawn as DOM overlays, not map
+// layers). Shore points are display-only: no editing on the map in this mode.
 //
 // The basemap is chosen automatically from mapData.extent (utils/basemap.js)
 // until the user picks one in the layer control; after that their choice wins
@@ -263,6 +283,73 @@ export default function MapPanel({ mapData, azimuthDeg, editing }) {
     }
   }, [isobases])
 
+  // The data's buffered hull: a thin dashed outline (the extent the surface is
+  // trusted over).
+  const dataHull = mapData?.dataHull
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    const layers = layersRef.current
+    if (layers.hull) {
+      map.removeLayer(layers.hull)
+      layers.hull = null
+    }
+    if (dataHull) {
+      layers.hull = L.geoJSON(dataHull, {
+        pane: 'hull',
+        interactive: false,
+        style: { color: '#6b7280', weight: 1, dashArray: '3 5', fill: false }
+      }).addTo(map)
+    }
+  }, [dataHull])
+
+  // The fitted surface's isobases, labelled in absolute meters a.s.l.: solid where
+  // the data support them, dashed outside the hull (extrapolated).
+  const surfaceIsobases = mapData?.surfaceIsobases
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    const layers = layersRef.current
+    if (layers.surfaceIsobases) {
+      map.removeLayer(layers.surfaceIsobases)
+      layers.surfaceIsobases = null
+    }
+    const parts = [
+      ['inside', undefined],
+      ['outside', '5 5']
+    ].filter(([key]) => surfaceIsobases?.[key]?.features?.length)
+    if (parts.length) {
+      const group = L.layerGroup()
+      for (const [key, dashArray] of parts) {
+        const fc = surfaceIsobases[key]
+        L.geoJSON(fc, {
+          pane: 'isobases',
+          interactive: false,
+          style: { color: '#3b82f6', weight: 1.25, opacity: 0.9, dashArray }
+        }).addTo(group)
+        for (const f of fc.features) {
+          const coords = f.geometry?.coordinates
+          if (!coords?.length) continue
+          const [lon, lat] = coords[coords.length - 1]
+          L.marker([lat, lon], {
+            pane: 'isobases',
+            interactive: false,
+            keyboard: false,
+            icon: L.divIcon({
+              className: '',
+              iconSize: null,
+              html:
+                '<span style="font:600 11px system-ui,sans-serif;color:#1d4ed8;white-space:nowrap;' +
+                'text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff;">' +
+                `${elevationLabel(f.properties?.elevation_m)}</span>`
+            })
+          }).addTo(group)
+        }
+      }
+      layers.surfaceIsobases = group.addTo(map)
+    }
+  }, [surfaceIsobases])
+
   const contour = mapData?.contour
   useEffect(() => {
     const map = mapRef.current
@@ -289,6 +376,51 @@ export default function MapPanel({ mapData, azimuthDeg, editing }) {
   useEffect(() => {
     vectorLayerRef.current?.setEditing(editing)
   })
+
+  // Shore points: small circles colored by residual on a blue <-> orange diverging
+  // scale (neutral gray until the fit answers), possible outliers with a heavier
+  // dark ring and drawn last (on top). The tooltip is built as DOM text, never
+  // HTML: a site name comes from the user's file.
+  const shorePoints = mapData?.shorePoints
+  const residualMax = residualExtent((shorePoints ?? []).map((p) => p.residualM))
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    const layers = layersRef.current
+    if (layers.points) {
+      map.removeLayer(layers.points)
+      layers.points = null
+    }
+    if (shorePoints?.length) {
+      const group = L.layerGroup()
+      const ordered = [...shorePoints].sort((a, b) => Number(a.outlier) - Number(b.outlier))
+      for (const p of ordered) {
+        const marker = L.circleMarker([p.lat, p.lon], {
+          pane: 'points',
+          radius: p.outlier ? 6 : 5,
+          color: p.outlier ? '#111827' : '#374151',
+          weight: p.outlier ? 3 : 1,
+          fillColor: p.residualM === null ? RESIDUAL_UNKNOWN : residualColor(p.residualM, residualMax),
+          fillOpacity: 0.95
+        })
+        const tip = document.createElement('div')
+        const lines = [
+          p.label || 'Shore point',
+          `${p.elevationM} m elevation`,
+          p.residualM === null ? 'residual: not fitted yet' : `residual ${signed(p.residualM)} m${p.outlier ? ' (possible outlier)' : ''}`
+        ]
+        lines.forEach((text, i) => {
+          const line = document.createElement('div')
+          line.textContent = text
+          if (i === 0) line.style.fontWeight = '600'
+          tip.appendChild(line)
+        })
+        marker.bindTooltip(tip)
+        marker.addTo(group)
+      }
+      layers.points = group.addTo(map)
+    }
+  }, [shorePoints, residualMax])
 
   const azimuthLine = mapData?.azimuthLine
   useEffect(() => {
@@ -369,6 +501,23 @@ export default function MapPanel({ mapData, azimuthDeg, editing }) {
     <div className="relative h-full w-full overflow-hidden bg-gray-50">
       <div ref={containerRef} className="h-full w-full" />
       <CompassRose azimuthDeg={azimuthDeg} />
+      {residualMax > 0 && (
+        // Bottom-right, above Leaflet's attribution; shore-points mode only.
+        <div
+          role="group"
+          aria-label="Residual legend"
+          className="absolute bottom-7 right-2 z-[1000] rounded-md bg-white/95 px-2 py-1.5 text-[11px] text-gray-700 shadow"
+        >
+          <div className="font-medium">Residual (m)</div>
+          <div className="mt-1 h-2 w-28 rounded" style={{ background: RESIDUAL_GRADIENT }} />
+          <div className="mt-0.5 flex w-28 justify-between">
+            <span>−{Number(residualMax.toPrecision(2))}</span>
+            <span>0</span>
+            <span>+{Number(residualMax.toPrecision(2))}</span>
+          </div>
+          <div className="mt-0.5 text-gray-500">Dark ring: possible outlier</div>
+        </div>
+      )}
       {editing?.mode === 'addVector' && (
         <div className="absolute left-1/2 top-3 z-[1000] flex -translate-x-1/2 items-center gap-2 rounded-md bg-white/95 px-3 py-1.5 text-xs shadow">
           <span className="text-gray-600">Drag to place a vector; click to place one without a direction.</span>

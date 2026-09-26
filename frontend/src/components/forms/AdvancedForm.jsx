@@ -6,7 +6,8 @@ import { CoordinateModeStep, CoordinatesStep } from '../steps/CoordinateSteps.js
 import { TargetElevationField, ProductsStep } from '../steps/TiltAndProductsSteps.jsx'
 import TiltModelBody from '../advanced/TiltModelBody.jsx'
 import { getReadiness, parseSelectionRadiusKm } from '../../utils/readiness.js'
-import { usingVectors } from '../../utils/tiltModel.js'
+import { usingPoints, usingVectors } from '../../utils/tiltModel.js'
+import { normalizeShorePoints, surfaceOf } from '../../utils/shorePoints.js'
 import { anyGlobal, isCustom, normalizeVectors } from '../../utils/vectors.js'
 import { STEPS, scrollToStep } from '../../utils/steps.js'
 
@@ -74,6 +75,11 @@ export default function AdvancedForm({ focusRequest }) {
       `${vectors.length} ${vectors.length === 1 ? 'vector' : 'vectors'}` +
       `${custom ? ` (${custom} custom)` : ''}` +
       `${anyGlobal(vectors) ? ` · ${tiltFactor} m/km global${family === 'linear' ? '' : ` · ${family}`}` : ''}`
+  }
+
+  if (usingPoints(formState)) {
+    const count = normalizeShorePoints(formState.advanced.shorePoints).length
+    tiltSummary = `${count} shore ${count === 1 ? 'point' : 'points'} · order ${surfaceOf(formState.advanced).order}`
   }
 
   const originNeeds = needs('origin')

@@ -20,6 +20,11 @@ frontend/
                              formState.upliftPreview (isobases + per-vector fit);
                              needs a ready tilt section, the resolved origin and
                              the DEM bounds; cleared when not in vectors mode
+      useSurfaceFit.js      the shore-points source's: debounced (500ms) POST
+                             /api/fit-uplift-surface -> transient formState.surfaceFit
+                             ({ status, data, error, key }; `key` is the request it
+                             answers, so a stale fit is never drawn as current);
+                             also exports surfaceFitBody / surfaceFitKey
     context/             ProcessingContext: shared form state + `mode` + the
                           `advanced` namespace (`updateForm`, `updateAdvanced`),
                           carry-forward to localStorage (not presets — separate concern).
@@ -55,6 +60,14 @@ frontend/
                            (buildVectorsDirection), CSV import (papaparse),
                            the map adapter (vectorsToMapData), map-edit
                            formatting (fieldsFromGeometry), the undo stack
+      shorePoints.js      the shore-points row model and everything pure about it:
+                           order feasibility (6 / 9 / 13 points), readiness
+                           (pointIssues), the payload (buildPointsDirection,
+                           buildFitBody), CSV parsing with a column mapping
+                           (parseShorePointsCsv, autoMapColumns), the map adapter
+                           (shorePointsToMapData), elevationLabel
+      colors.js           the blue <-> orange diverging residual scale
+                           (residualColor, residualExtent)
     components/
       shared/
         AppLayout.jsx      page layout for form + results views: header, form
@@ -73,8 +86,9 @@ frontend/
       advanced/
         TiltModelBody.jsx  the Advanced Tilt-model section body (the extension
                             point): direction-source switch (Single azimuth |
-                            Vectors), shared azimuth + gradient inputs, profile
-                            family, family parameters, hinge rule, chart
+                            Vectors | Shore points), shared azimuth + gradient
+                            inputs, profile family, family parameters, hinge rule,
+                            chart; in points mode only the panel + a muted note
         ProfileChart.jsx   hand-rolled SVG uplift-vs-distance preview + warnings
         VectorTable.jsx    the vectors table (#, Lat, Lon, Azim, Range, Tilt, Fit,
                             remove), custom-tilt rows, + Add row / Add on map /
@@ -82,15 +96,25 @@ frontend/
         CsvImport.jsx      the CSV import panel (Replace / Append buttons)
         VectorFitSummary.jsx  vectors mode's replacement for the profile chart:
                             fit summary line, guard note, preview warnings
-        fields.jsx         NumberField / Help / Segmented, shared by the above
+        ShorePointsPanel.jsx  shore-points mode: the points summary (Import CSV /
+                            Add point / View table), the fit-order control (orders the
+                            point count cannot support are disabled, with a tooltip),
+                            the order comparison table, the two option selects, the
+                            editable/sortable points table and the fit status
+        CsvImport.jsx      CsvImportPanel (schema-agnostic: parse/commit props,
+                            Replace/Append, skipped-rows report, and a column picker
+                            when the parser asks for a mapping) + the vectors wrapper
+        fields.jsx         NumberField / Help / Segmented (options may be disabled
+                            with a tooltip), shared by the above
       map/
         MapPanel.jsx       pipeline-agnostic — see "map component contract" in
                            GIA_Tool_Penpot_Spec.md / VISUALIZATION_PIPELINE_SPEC.md.
                            Vanilla Leaflet (no react-leaflet) wired via
                            useRef/useEffect; renders whatever subset of
                            extent/rasterPreview/origin/azimuthLine/contour/
-                           tiltedRasterPreview/selectionRadius/vectors/isobases
-                           it's handed, and reports vector edits through an
+                           tiltedRasterPreview/selectionRadius/vectors/isobases/
+                           shorePoints/surfaceIsobases/dataHull (+ the residual
+                           legend) it's handed, and reports vector edits through an
                            optional `editing` prop's callbacks. One effect and
                            one pane per layer group, so editing vectors never
                            rebuilds the raster.
@@ -166,6 +190,34 @@ frontend/
   `tilt_azimuth`, and omits `tilt_factor` (and the unused global profile) only
   when every vector is custom; the single-azimuth line and compass needle are
   not drawn.
+- Shore-point uplift surfaces (`SHORE_POINT_SURFACE_SPEC.md`, spec 6) are
+  implemented in Advanced mode: the **Direction source** switch gains a third
+  segment, **Shore points**. Points come from **Import CSV** (headers `lat|latitude`,
+  `lon|lng|long|longitude`, `elevation|elev|elevation_m|z|height`, optional
+  `site|name|site_name|label`, case-insensitive; when lat/lon/elevation cannot all be
+  matched a **column picker** shows one select per field over the file's own headers
+  with the first five rows previewed; skipped rows are reported; Replace / Append),
+  **Add point**, or the table (**View table**: site, lat, lon, elevation, residual;
+  every cell editable, rows deletable, outlier rows flagged with the word "outlier",
+  sortable by residual once a fit exists). The **fit order** control is 1 | 2 | 3
+  with orders the point count cannot support disabled (minimums 6, 9, 13); beneath
+  it an advisory comparison table (order, R², adj. R², RMSE) with the selected row
+  highlighted. Two selects: **Behind the spillway** (Apply surface as fitted, the
+  default | No change behind origin) and **Outside the data** (Warn, the default |
+  Mask (no contours)). The gradient, profile and hinge blocks are hidden, replaced by
+  a muted "Magnitude comes from the fitted surface." The map shows the points colored
+  by residual, the surface's isobases (dashed outside the data), the data hull and a
+  residual legend; it is display-only in this mode.
+  State: `advanced.directionSource` gains `'points'`, and `advanced.shorePoints`
+  (rows `{ id, lat, lon, elevationM, label }`, all strings, stable `id`s -- like
+  vectors) and `advanced.surface` (`{ order, hinge, extrapolation }`) are persisted
+  (a localStorage quota failure only costs the carry-forward, with one
+  `console.warn`); the fit response is the transient top-level `surfaceFit` key.
+  Readiness (keyed to the tilt section): at least the minimum point count for the
+  chosen order, and every point valid; neither `tiltAzimuth` nor `tiltFactor` is
+  required. The payload sends `direction.type = 'points'` (numbers, plus `label`
+  only when present, so `shore_points.csv` in the result keeps site names) and no
+  top-level `profile`, `hinge`, `tilt_azimuth` or `tilt_factor`.
 - Presets and the reprojection modal aren't scaffolded yet.
 - Vitest + `@testing-library/react` are configured (`npm test`, config lives
   in `vite.config.js`'s `test` key, setup file at `src/test/setup.js`). Still
@@ -179,7 +231,10 @@ frontend/
   `utils/readiness.js`) is deliberately split out of component files so it's
   testable without pulling in heavy UI dependencies (`MapPanel.jsx` ->
   `georaster-layer-for-leaflet` in particular doesn't resolve cleanly under
-  Vitest's module resolution) — keep that pattern for similar extractions.
+  Vitest's module resolution) — keep that pattern for similar extractions. (Where a
+  test does need `MapPanel` itself, stub the raster library with
+  `vi.mock('georaster-layer-for-leaflet', () => ({ default: class {} }))`, as
+  `MapPanel.shorePoints.test.jsx` does: Leaflet then runs for real under jsdom.)
 
 ## Production build
 

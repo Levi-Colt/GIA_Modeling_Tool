@@ -30,7 +30,8 @@ export function Help({ children }) {
   return <p className="mt-1 text-xs text-gray-500">{children}</p>
 }
 
-// Two-option segmented control (same look as the Basic/Advanced mode switch).
+// Segmented control (same look as the Basic/Advanced mode switch). An option may
+// be `disabled`, with a `title` tooltip saying why.
 export function Segmented({ label, options, value, onChange }) {
   return (
     <div>
@@ -43,10 +44,12 @@ export function Segmented({ label, options, value, onChange }) {
               key={o.value}
               type="button"
               aria-pressed={active}
+              disabled={o.disabled || undefined}
+              title={o.title}
               onClick={() => onChange(o.value)}
               className={`rounded-md px-3 py-1 text-sm ${
                 active ? 'bg-white font-medium text-gray-900 shadow-sm' : 'bg-transparent text-gray-500'
-              }`}
+              } ${o.disabled ? 'cursor-not-allowed opacity-40' : ''}`}
             >
               {o.label}
             </button>

@@ -14,8 +14,10 @@ backend stays canonical in k: this layer converts, so the math and
 run_parameters.json have one representation. The conversion needs the
 gradient at the spillway (`tilt_factor`), so the parse functions take it.
 
-Direction types: `azimuth` (spec 4) and `vectors` (spec 5, VECTOR_FIELD_SPEC.md);
-spec 6 (shore points) adds another. In `vectors` mode each vector may carry a
+Direction types: `azimuth` (spec 4), `vectors` (spec 5, VECTOR_FIELD_SPEC.md) and
+`points` (spec 6, SHORE_POINT_SURFACE_SPEC.md: a trend surface fitted to shore
+points, whose magnitude comes from the data -- so the top-level `profile` and
+`hinge` must be absent, and neither tilt_azimuth nor tilt_factor is needed). In `vectors` mode each vector may carry a
 custom tilt (linear or quadratic, a *local* gradient at the vector's own
 location; a quadratic's curvature takes the same two forms as the global
 profile, with `second_gradient` relative to the vector). The global `profile` is
@@ -31,13 +33,19 @@ from typing import Any, Union
 from pydantic import BaseModel, ConfigDict, StrictFloat, StrictInt, ValidationError
 
 from backend.uplift import FAMILIES, HINGE_MODES
+from backend.uplift_surface import (
+    DEFAULT_EXTRAPOLATION, DEFAULT_HINGE_MODE as DEFAULT_SURFACE_HINGE, EXTRAPOLATION_MODES,
+    HINGE_MODES as SURFACE_HINGE_MODES, ORDERS as SURFACE_ORDERS, min_points,
+)
 
 # Strict: JSON numbers only (no "0.3" strings, no true/false).
 Number = Union[StrictInt, StrictFloat]
 
 SUPPORTED_VERSION = 1
-SUPPORTED_DIRECTION_TYPES = ("azimuth", "vectors")
+SUPPORTED_DIRECTION_TYPES = ("azimuth", "vectors", "points")
 MAX_VECTORS = 200
+MAX_POINTS = 5000
+MAX_POINT_LABEL_LENGTH = 100
 CUSTOM_FAMILIES = ("linear", "quadratic")
 MAX_EXTRA_COEFFICIENTS = 4  # c2..c5 (degree 2-5)
 
@@ -45,6 +53,9 @@ NATURAL_REMOVED_MESSAGE = (
     "hinge mode 'natural' was removed; use 'none' (the zero-gradient guard still applies)."
 )
 NON_FINITE_MESSAGE = "tilt_azimuth and tilt_factor must be finite numbers."
+POINTS_PROFILE_HINGE_MESSAGE = (
+    "profile and hinge don't apply to shore-point surfaces — magnitude comes from the data."
+)
 
 
 class TiltModelError(ValueError):
@@ -78,9 +89,21 @@ class VectorModel(_Strict):
     custom: CustomTilt | None = None
 
 
+class PointModel(_Strict):
+    lat: Number
+    lon: Number
+    elevation_m: Number
+    label: Any = None  # optional site name; checked by hand (a string of at most 100 characters)
+
+
 class Direction(_Strict):
     type: Any
     vectors: list[VectorModel] | None = None
+    # `points` mode only (spec 6). order / hinge / extrapolation are checked by hand.
+    points: list[PointModel] | None = None
+    order: Any = None
+    hinge: Any = None
+    extrapolation: Any = None
 
 
 class Profile(_Strict):
@@ -194,11 +217,59 @@ def _validate_vector(i, v: VectorModel, tilt_factor) -> dict:
     }
 
 
+def _validate_point(i, p: PointModel) -> dict:
+    who = f"Shore point {i + 1}: "
+    if not _finite(p.lat) or not -90 <= p.lat <= 90:
+        raise TiltModelError(f"{who}lat must be between -90 and 90.")
+    if not _finite(p.lon) or not -180 <= p.lon <= 180:
+        raise TiltModelError(f"{who}lon must be between -180 and 180.")
+    if not _finite(p.elevation_m):
+        raise TiltModelError(f"{who}elevation_m must be a finite number.")
+    label = p.label
+    if label is not None:
+        if not isinstance(label, str):
+            raise TiltModelError(f"{who}label must be a string.")
+        if len(label) > MAX_POINT_LABEL_LENGTH:
+            raise TiltModelError(f"{who}label must be at most {MAX_POINT_LABEL_LENGTH} characters.")
+    return {"lat": float(p.lat), "lon": float(p.lon), "elevation_m": float(p.elevation_m), "label": label}
+
+
+def _validate_points_direction(direction: Direction) -> dict:
+    """The `direction` object of a `points` model, validated and normalized.
+    Duplicate coordinates are allowed (real data has them)."""
+    raw = direction.points
+    if raw is None:
+        raise TiltModelError("tilt_model.direction.points is required when direction.type is 'points'.")
+    if not 1 <= len(raw) <= MAX_POINTS:
+        raise TiltModelError(f"tilt_model.direction.points must contain 1 to {MAX_POINTS} points.")
+    points = [_validate_point(i, p) for i, p in enumerate(raw)]
+
+    order = direction.order
+    if type(order) is not int or order not in SURFACE_ORDERS:  # not a bool or a float
+        raise TiltModelError(f"tilt_model.direction.order must be one of {list(SURFACE_ORDERS)}.")
+    if len(points) < min_points(order):
+        raise TiltModelError(
+            f"An order-{order} surface needs at least {min_points(order)} shore points "
+            f"(got {len(points)}); add points or choose a lower order."
+        )
+    hinge = DEFAULT_SURFACE_HINGE if direction.hinge is None else direction.hinge
+    if hinge not in SURFACE_HINGE_MODES:
+        raise TiltModelError(f"tilt_model.direction.hinge must be one of {list(SURFACE_HINGE_MODES)}.")
+    extrapolation = DEFAULT_EXTRAPOLATION if direction.extrapolation is None else direction.extrapolation
+    if extrapolation not in EXTRAPOLATION_MODES:
+        raise TiltModelError(
+            f"tilt_model.direction.extrapolation must be one of {list(EXTRAPOLATION_MODES)}."
+        )
+    return {"type": "points", "points": points, "order": order, "hinge": hinge,
+            "extrapolation": extrapolation}
+
+
 def require_direction_inputs(direction_type, tilt_azimuth, tilt_factor, first_global_vector=None):
     """
     The tilt_azimuth / tilt_factor requirement rules. `direction_type` is None
     for a basic run (no tilt_model). `first_global_vector` is the 1-based number
-    of the first vector using the global profile (None when none does).
+    of the first vector using the global profile (None when none does). A
+    `points` model needs neither field (only non-finite values are rejected).
     Raises TiltModelError naming the condition that applied.
     """
     if direction_type in (None, "azimuth"):
@@ -248,7 +319,20 @@ def validate_tilt_model(obj: Any, tilt_factor, tilt_azimuth=None) -> dict:
 
     vectors = None
     first_global = None
-    if direction_type == "vectors":
+    points_direction = None
+    if direction_type != "points":
+        stray = [k for k in ("points", "order", "hinge", "extrapolation") if getattr(model.direction, k) is not None]
+        if stray:
+            raise TiltModelError(
+                f"tilt_model.direction.{stray[0]} is only allowed when direction.type is 'points'."
+            )
+    if direction_type == "points":
+        if model.profile is not None or model.hinge is not None:
+            raise TiltModelError(POINTS_PROFILE_HINGE_MESSAGE)
+        if model.direction.vectors is not None:
+            raise TiltModelError("tilt_model.direction.vectors is only allowed when direction.type is 'vectors'.")
+        points_direction = _validate_points_direction(model.direction)
+    elif direction_type == "vectors":
         raw = model.direction.vectors
         if raw is None:
             raise TiltModelError("tilt_model.direction.vectors is required when direction.type is 'vectors'.")
@@ -281,6 +365,9 @@ def validate_tilt_model(obj: Any, tilt_factor, tilt_azimuth=None) -> dict:
                 raise TiltModelError("A 'distance' hinge requires distance_km > 0 and finite.")
         elif hinge.distance_km is not None:
             raise TiltModelError(f"A '{hinge.mode}' hinge does not take distance_km.")
+
+    if points_direction is not None:
+        return {"version": model.version, "direction": points_direction, "profile": None, "hinge": None}
 
     direction_out = {"type": direction_type}
     if vectors is not None:

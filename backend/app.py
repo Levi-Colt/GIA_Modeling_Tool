@@ -131,6 +131,11 @@ def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
         d_min, d_max = uplift_d_range_km(uplift_model, origin_coords, bounds)
         uplift_model.warn_for_range(d_min, d_max)
 
+    # A model that masks cells to NaN (spec 6's shore-point `mask` mode) leaves
+    # valid/NaN boundaries the contour step must not trace (see
+    # extract_strandline_contours).
+    trim_nan_edges = bool(getattr(uplift_model, "masks_outside", False))
+
     # The uplift model's own evaluation temporaries (e.g. Horner's ~2 float64
     # arrays for a degree>=2 polynomial) come on top of the base tilt cost.
     tilt_bytes_per_pixel = TILT_BYTES_PER_PIXEL + uplift_model.extra_bytes_per_pixel
@@ -150,6 +155,7 @@ def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
             )
             contours = extract_strandline_contours_windowed(
                 tilted_path, target_elevation, tile_size=contour_tile_size,
+                trim_nan_edges=trim_nan_edges,
             )
             if include_dem:
                 write_dem_to_gpkg_windowed(tilted_path, output_gpkg_path, tile_size=gpkg_tile_size)
@@ -166,7 +172,8 @@ def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
             dem_array, transform, origin_coords, tilt_azimuth, tilt_factor, chunk_rows=chunk_rows,
             uplift_model=uplift_model,
         )
-        contours = extract_strandline_contours(tilted_array, transform, target_elevation)
+        contours = extract_strandline_contours(
+            tilted_array, transform, target_elevation, trim_nan_edges=trim_nan_edges)
         if include_dem:
             write_dem_to_gpkg(tilted_array, transform, crs, output_gpkg_path)
         lines = [LineString(c) for c in contours]

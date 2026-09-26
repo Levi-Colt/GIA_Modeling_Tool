@@ -69,9 +69,22 @@ Revised:
                        // Built in App.jsx (utils/vectors.js vectorsToMapData); azimuthDeg is
                        // null for a click-added row, which draws only its base handle.
                        // lengthKm = rangeKm, else 10% of the DEM diagonal.
-  isobases             // spec 5, optional: GeoJSON FeatureCollection of LineStrings with an
+  isobases,            // spec 5, optional: GeoJSON FeatureCollection of LineStrings with an
                        // `uplift_m` property, from /api/uplift-preview; drawn thin and blue,
                        // labelled at one end ("+40 m"), the spillway's own (0) heavier.
+  shorePoints,         // spec 6, optional: [{ id, lon, lat, elevationM, residualM | null,
+                       // outlier, label }] — shore points, drawn as small circles colored by
+                       // residual on a blue (below the surface) <-> orange (above) diverging
+                       // scale; null residual = neutral gray (the fit has not answered these
+                       // exact points yet); outliers get a heavier dark ring and are drawn last.
+                       // Tooltip (built as DOM text, never HTML): site, elevation, residual.
+                       // Built in App.jsx (utils/shorePoints.js shorePointsToMapData).
+  surfaceIsobases,     // spec 6, optional: { inside, outside } GeoJSON FeatureCollections of
+                       // LineStrings with an `elevation_m` property (absolute m a.s.l.), from
+                       // /api/fit-uplift-surface; `inside` solid, `outside` dashed, each labelled
+                       // ("331 m"). Contours of the fitted surface S, not of the model's U.
+  dataHull             // spec 6, optional: GeoJSON Polygon — the data's buffered convex hull, a
+                       // thin dashed outline
 }
 
 // Optional prop, alongside mapData (vectors mode, form view only; absent on the results
@@ -102,6 +115,11 @@ on until Escape (a listener on the map container, not `window`), Done, or the ta
 toggle. Pointer events are used, so touch works. The gestures live in
 `components/map/VectorLayer.js`, owned by `MapPanel`.
 
+**Shore points (spec 6)** are render-only: no editing on the map in this mode. A compact
+**residual legend** (a DOM overlay like the compass rose, not a map layer) sits at the
+bottom right, above the attribution, whenever any point has a residual: a symmetric
+gradient bar (largest |residual|, "0" in the middle) and "Dark ring: possible outlier".
+
 `MapPanel` stays a dumb renderer: it takes whatever fields are present and
 draws them, same principle as before, just a wider shape. It still doesn't
 care whether `contour` came from a live run or `tiltedRasterPreview` is
@@ -110,8 +128,8 @@ absent because `include_dem` was off.
 Layer order (bottom to top): basemap (own `basemap` pane below tilePane) →
 `rasterPreview` → `tiltedRasterPreview` (when
 present, replaces the input raster as the visible base rather than
-stacking) → `selectionRadius` circle → `isobases` → `contour` → `vectors` → `azimuthLine`
-(azimuth direction source only) → `origin` marker → compass rose (fixed UI chrome, not a
+stacking) → `selectionRadius` circle → `dataHull` → `isobases` / `surfaceIsobases` → `contour` →
+`vectors` → `shorePoints` → `azimuthLine` (azimuth direction source only) → `origin` marker → compass rose (fixed UI chrome, not a
 map layer, always rendered regardless of data). Each overlay group has its own Leaflet
 pane and its own effect (keyed on that field's identity), so the stacking order never
 depends on insertion order and editing the vectors never rebuilds the raster; the view

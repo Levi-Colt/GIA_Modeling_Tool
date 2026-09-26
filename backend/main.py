@@ -221,11 +221,13 @@ def tilt_DEM_windowed(DEM_path, output_path, origin_coords, tilt_azimuth, tilt_f
     return output_path, out_transform, out_crs
 
 
-def extract_strandline_contours_windowed(tilted_DEM_path, target_elevation, tile_size=1024, halo=32):
+def extract_strandline_contours_windowed(tilted_DEM_path, target_elevation, tile_size=1024, halo=32,
+                                         trim_nan_edges=False):
     """
     Extracts strandline contours tile-by-tile from a large tilted DEM, using a
     padded "halo" read around each tile so contours crossing tile boundaries
     still trace correctly, then clips and merges fragments back together.
+    trim_nan_edges is passed through to extract_strandline_contours.
     """
     fragments = []
     with rasterio.open(tilted_DEM_path) as src:
@@ -258,7 +260,8 @@ def extract_strandline_contours_windowed(tilted_DEM_path, target_elevation, tile
                 # "no contour in this tile," not an invalid request -- so these
                 # specific ValueErrors are swallowed here rather than propagated.
                 try:
-                    tile_contours = extract_strandline_contours(block, window_transform, target_elevation)
+                    tile_contours = extract_strandline_contours(
+                        block, window_transform, target_elevation, trim_nan_edges=trim_nan_edges)
                 except ValueError:
                     continue
                 # Core tile's real-world bounding box (unpadded)
@@ -596,10 +599,42 @@ def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_facto
         )
     return out
 
-def extract_strandline_contours(tilted_DEM, transform, target_elevation):
+def _split_at_nan_edges(rows, cols, nan_mask):
+    """
+    Pieces of a contour (as (rows, cols) arrays) whose vertices are all clear of
+    NaN: a vertex is dropped when any of the (up to four) cells surrounding it is
+    NaN, and the line is split there. Pieces of fewer than 2 vertices are dropped.
+    """
+    max_r, max_c = nan_mask.shape[0] - 1, nan_mask.shape[1] - 1
+    r0 = np.clip(np.floor(rows).astype(int), 0, max_r)
+    r1 = np.clip(np.ceil(rows).astype(int), 0, max_r)
+    c0 = np.clip(np.floor(cols).astype(int), 0, max_c)
+    c1 = np.clip(np.ceil(cols).astype(int), 0, max_c)
+    bad = nan_mask[r0, c0] | nan_mask[r0, c1] | nan_mask[r1, c0] | nan_mask[r1, c1]
+    pieces = []
+    start = None
+    for i, is_bad in enumerate(np.append(bad, True)):  # sentinel closes the last run
+        if not is_bad and start is None:
+            start = i
+        elif is_bad and start is not None:
+            if i - start >= 2:
+                pieces.append((rows[start:i], cols[start:i]))
+            start = None
+    return pieces
+
+
+def extract_strandline_contours(tilted_DEM, transform, target_elevation, trim_nan_edges=False):
     """
     Extracts continuous strandline paths at a target paleo-elevation.
     Automatically translates pixel vectors back into geospatial coordinates.
+
+    trim_nan_edges: NaN cells are filled with an extreme value before contouring,
+    so the contour that follows a valid/NaN boundary sits ~0.0002 px inside the
+    valid side, rounds onto a valid cell, and slips past the whole-line NaN check
+    below (and a real strandline reaching that boundary is one polyline with it).
+    True drops every vertex adjacent to NaN and splits the line there, leaving
+    only the strandline itself. Off by default so existing runs are unchanged;
+    process_dem turns it on for models that mask cells (spec 6's `mask` mode).
     """
     # 1. Prevent contour artifacts by handling NaNs defensively.
     # Instead of an extreme value like -9999, we interpolate or use a value 
@@ -638,6 +673,12 @@ def extract_strandline_contours(tilted_DEM, transform, target_elevation):
         rows = contour[:, 0]
         cols = contour[:, 1]
         
+        if trim_nan_edges and nan_mask.any():
+            for piece_rows, piece_cols in _split_at_nan_edges(rows, cols, nan_mask):
+                lons, lats = rasterio.transform.xy(transform, piece_rows, piece_cols)
+                geo_contours.append(np.column_stack((lons, lats)))
+            continue
+
         # Verify if this contour is just tracing your artificial NaN boundary cliff
         # We sample the coordinates to see if they are touching the original missing data mask
         rounded_rows = np.clip(np.round(rows).astype(int), 0, tilted_DEM.shape[0] - 1)

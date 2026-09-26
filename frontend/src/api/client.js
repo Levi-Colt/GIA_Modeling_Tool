@@ -113,6 +113,25 @@ export async function upliftPreview(body, { signal } = {}) {
   return res.json()
 }
 
+// Trend-surface fit for the shore-points direction source: statistics for every
+// order the point count allows, residuals, the surface's isobases and the data
+// hull. Pure math, no raster I/O. `body` is { points, order, origin, bounds_wgs84,
+// hinge, extrapolation } (origin and bounds are both required); see
+// documentation/api-README.md.
+export async function fitUpliftSurface(body, { signal } = {}) {
+  const res = await fetch(`${API_BASE}fit-uplift-surface`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}))
+    throw new Error(typeof detail.detail === 'string' ? detail.detail : 'Surface fit failed')
+  }
+  return res.json()
+}
+
 export async function runProcess(payload) {
   const form = new FormData()
   Object.entries(payload).forEach(([key, value]) => {

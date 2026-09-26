@@ -24,6 +24,7 @@ export function scrollToStep(id) {
 export function classifyErrorStep(message) {
   const text = (message || '').toLowerCase()
   if (/elevation range/.test(text)) return 'coordinates'
+  if (/shore point|buffered hull|trend surface/.test(text)) return 'tilt'
   if (/extent|origin|500|geodesic/.test(text)) return 'coordinates'
   if (/file type|corrupted|geotiff|extension/.test(text)) return 'upload'
   return null

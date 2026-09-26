@@ -12,11 +12,13 @@ import ResultsError from './components/results/ResultsError.jsx'
 import { runProcess } from './api/client.js'
 import { useProfilePreview } from './hooks/useProfilePreview.js'
 import { useUpliftPreview } from './hooks/useUpliftPreview.js'
+import { surfaceFitKey, useSurfaceFit } from './hooks/useSurfaceFit.js'
 import { azimuthLine as computeAzimuthLine } from './utils/geometry.js'
 import { getReadiness, isReadyToRun, parseSelectionRadiusKm } from './utils/readiness.js'
 import { buildProcessPayload } from './utils/payload.js'
 import { classifyErrorStep } from './utils/steps.js'
-import { usingVectors } from './utils/tiltModel.js'
+import { usingPoints, usingVectors } from './utils/tiltModel.js'
+import { normalizeShorePoints, shorePointsToMapData } from './utils/shorePoints.js'
 import { fieldsFromGeometry, newVector, normalizeVectors, vectorsToMapData } from './utils/vectors.js'
 
 // Derives the map's input-preview shape from the form's fields alone — the
@@ -27,15 +29,16 @@ import { fieldsFromGeometry, newVector, normalizeVectors, vectorsToMapData } fro
 // preview" half of the map contract; the "result preview" half (contour /
 // tiltedRasterPreview) gets populated separately once /process returns —
 // see the adapter in handleRunModel below.
-function deriveMapDataFromForm(formState, vectorsMode) {
+function deriveMapDataFromForm(formState, hideAzimuthLine) {
   const extent = formState.boundsWgs84 || null
   const origin = formState.resolvedOrigin || null
   const azimuthDeg = formState.tiltAzimuth !== '' ? Number(formState.tiltAzimuth) : null
 
   // The single-azimuth line belongs to the azimuth direction source only; in
-  // vectors mode the arrows and isobases (added by the caller) take its place.
+  // vectors mode the arrows and isobases (added by the caller) take its place, and
+  // in shore-points mode the points and the fitted surface's isobases do.
   let azimuthLine = null
-  if (!vectorsMode && extent && origin && azimuthDeg !== null && !Number.isNaN(azimuthDeg)) {
+  if (!hideAzimuthLine && extent && origin && azimuthDeg !== null && !Number.isNaN(azimuthDeg)) {
     azimuthLine = computeAzimuthLine(origin, azimuthDeg, extent)
   }
 
@@ -86,16 +89,23 @@ function ProcessingPage() {
   useProfilePreview()
   // Likewise the vectors direction source's isobases and per-vector fit.
   useUpliftPreview()
+  // And the shore-points direction source's fitted surface.
+  useSurfaceFit()
 
   // Map data. Each field is memoized on its own inputs so MapPanel's per-layer
   // effects only re-run for the layer that actually changed (an edit to the
   // vectors must not rebuild the raster). The vector and isobase fields only
   // exist in vectors mode.
   const vectorsMode = usingVectors(formState)
+  const pointsMode = usingPoints(formState)
   const { boundsWgs84, resolvedOrigin, tiltAzimuth, selectionRadiusKm, rasterPreviewGeoraster } = formState
   const inputMapData = useMemo(
-    () => deriveMapDataFromForm({ boundsWgs84, resolvedOrigin, tiltAzimuth, selectionRadiusKm, rasterPreviewGeoraster }, vectorsMode),
-    [boundsWgs84, resolvedOrigin, tiltAzimuth, selectionRadiusKm, rasterPreviewGeoraster, vectorsMode]
+    () =>
+      deriveMapDataFromForm(
+        { boundsWgs84, resolvedOrigin, tiltAzimuth, selectionRadiusKm, rasterPreviewGeoraster },
+        vectorsMode || pointsMode
+      ),
+    [boundsWgs84, resolvedOrigin, tiltAzimuth, selectionRadiusKm, rasterPreviewGeoraster, vectorsMode, pointsMode]
   )
   const vectorList = formState.advanced.vectors
   const selectedVectorId = formState.selectedVectorId
@@ -105,9 +115,33 @@ function ProcessingPage() {
     return list.length ? list : null
   }, [vectorsMode, vectorList, selectedVectorId, boundsWgs84])
   const isobases = vectorsMode ? formState.upliftPreview?.data?.isobases ?? null : null
+  // Shore points (drawn colored by residual once the fit answers exactly these
+  // points), the fitted surface's isobases and the data hull -- shore-points mode only.
+  const shorePointList = formState.advanced.shorePoints
+  const surfaceFit = formState.surfaceFit
+  const currentFitKey = pointsMode ? surfaceFitKey(formState) : null
+  const fitIsCurrent = surfaceFit?.status === 'ready' && surfaceFit.key !== null && surfaceFit.key === currentFitKey
+  const mapShorePoints = useMemo(() => {
+    if (!pointsMode) return null
+    const list = shorePointsToMapData(
+      normalizeShorePoints(shorePointList),
+      fitIsCurrent ? surfaceFit.data.selected : null
+    )
+    return list.length ? list : null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pointsMode, shorePointList, fitIsCurrent, surfaceFit?.data])
+  const surfaceIsobases = pointsMode ? surfaceFit?.data?.isobases ?? null : null
+  const dataHull = pointsMode ? surfaceFit?.data?.hull ?? null : null
   const formMapData = useMemo(
-    () => ({ ...inputMapData, vectors: mapVectors, isobases }),
-    [inputMapData, mapVectors, isobases]
+    () => ({
+      ...inputMapData,
+      vectors: mapVectors,
+      isobases,
+      shorePoints: mapShorePoints,
+      surfaceIsobases,
+      dataHull
+    }),
+    [inputMapData, mapVectors, isobases, mapShorePoints, surfaceIsobases, dataHull]
   )
   const resultMapData = runState.resultMapData
   const resultsMapData = useMemo(() => ({ ...formMapData, ...(resultMapData || {}) }), [formMapData, resultMapData])
@@ -133,7 +167,7 @@ function ProcessingPage() {
         onExitAddMode: () => setMapEditMode('none')
       }
     : undefined
-  const compassAzimuth = vectorsMode ? '' : formState.tiltAzimuth
+  const compassAzimuth = vectorsMode || pointsMode ? '' : formState.tiltAzimuth
 
   async function handleRunModel() {
     if (!isReadyToRun(formState)) return

@@ -1,4 +1,4 @@
-import { buildTiltModel, usingVectors } from './tiltModel.js'
+import { buildTiltModel, usingPoints, usingVectors } from './tiltModel.js'
 import { allCustom, normalizeVectors } from './vectors.js'
 
 // Builds the multipart fields for POST /api/process from form state. Lives in
@@ -11,7 +11,8 @@ import { allCustom, normalizeVectors } from './vectors.js'
 // never sends it, so the server runs the plain linear tilt. Vectors mode
 // (Advanced, direction source 'vectors') sends no `tilt_azimuth` (there is no
 // single azimuth) and omits `tilt_factor` only when every vector has a custom
-// tilt (no vector then uses the global profile).
+// tilt (no vector then uses the global profile). Shore-points mode sends neither,
+// and its `tilt_model` has no top-level profile or hinge.
 export function buildProcessPayload(formState) {
   const payload = buildSharedPayload(formState)
   if (formState.mode === 'advanced') {
@@ -19,6 +20,11 @@ export function buildProcessPayload(formState) {
     if (usingVectors(formState)) {
       delete payload.tilt_azimuth
       if (allCustom(normalizeVectors(formState.advanced.vectors))) delete payload.tilt_factor
+    }
+    if (usingPoints(formState)) {
+      // Neither applies to a fitted surface: the data give direction and magnitude.
+      delete payload.tilt_azimuth
+      delete payload.tilt_factor
     }
   }
   return payload

@@ -1,7 +1,7 @@
 // Split out from App.jsx so it can be unit-tested without pulling in the
 // rest of App.jsx's module graph (MapPanel -> georaster-layer-for-leaflet,
 // heavy and irrelevant to this pure gating logic).
-import { tiltModelIssues, usingVectors } from './tiltModel.js'
+import { tiltModelIssues, usingPoints, usingVectors } from './tiltModel.js'
 import { anyGlobal, normalizeVectors } from './vectors.js'
 
 // The optional selection radius (km): '' means "no limit"; anything else must
@@ -30,6 +30,10 @@ export function getReadiness(formState) {
     // spillway is needed only while some vector uses the global profile.
     const vectors = normalizeVectors(formState.advanced.vectors)
     if (anyGlobal(vectors) && !formState.tiltFactor) need('tilt', 'the global gradient at the spillway')
+  } else if (usingPoints(formState)) {
+    // Shore-points mode (Advanced only): magnitude and direction come from the
+    // fitted surface, so neither an azimuth nor a gradient is needed. The points
+    // themselves are checked with the other tilt-model issues below.
   } else {
     if (!formState.tiltAzimuth) need('tilt', 'tilt azimuth')
     if (!formState.tiltFactor) need('tilt', 'tilt factor')
@@ -57,7 +61,7 @@ export function getReadiness(formState) {
   if (formState.mode === 'advanced') {
     // Advanced-only checks (keyed to 'tilt'). They must never run for Basic:
     // advanced-only fields can't affect a Basic run's readiness. Later specs
-    // (shore points) append their own here; vectors are covered by tiltModelIssues.
+    // append their own here; vectors and shore points are covered by tiltModelIssues.
     for (const text of tiltModelIssues(formState.advanced)) need('tilt', text)
   }
 

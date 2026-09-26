@@ -18,6 +18,7 @@ Run locally with:
     uvicorn api.main:app --reload
 from the repository root.
 """
+import csv
 import datetime
 import functools
 import io
@@ -29,7 +30,7 @@ import subprocess
 import sys
 import warnings
 import zipfile
-from typing import Annotated
+from typing import Annotated, Any
 
 import geopandas as gpd
 import numpy as np
@@ -49,6 +50,9 @@ from backend.app import process_dem  # noqa: E402  (import after sys.path fixup,
 from backend.main import raster_io_check, check_available_ram_mb, uplift_d_range_km  # noqa: E402
 from backend.uplift import build_uplift_model  # noqa: E402
 from backend.direction_field import build_vector_model_from_spec, isobases_geojson  # noqa: E402
+from backend.uplift_surface import (  # noqa: E402
+    build_surface_model_from_spec, surface_isobases_geojson, unscaled_coeffs,
+)
 
 from api.crs import (  # noqa: E402
     normalize_origin_to_wgs84,
@@ -108,6 +112,65 @@ def _public_diagnostics(diagnostics: dict) -> dict:
         "ranges_km": diagnostics["ranges_km"],
         "grid": {"h_km": g["h"], "nx": g["nx"], "ny": g["ny"]},
     }
+
+
+def _finite_or_none(value):
+    """JSON has no Infinity/NaN: a degenerate design's condition number becomes null."""
+    return float(value) if value is not None and math.isfinite(value) else None
+
+
+def _fit_summary(fit: dict) -> dict:
+    """A fit's headline statistics (one row of the order-comparison table)."""
+    return {
+        "order": fit["order"], "n": fit["n"], "terms": fit["terms"],
+        "r2": _finite_or_none(fit["r2"]), "adj_r2": _finite_or_none(fit["adj_r2"]),
+        "rmse_m": _finite_or_none(fit["rmse_m"]),
+    }
+
+
+def _selected_fit(fit: dict) -> dict:
+    return {
+        **_fit_summary(fit),
+        "cond": _finite_or_none(fit["cond"]),
+        "residuals_m": fit["residuals_m"],
+        "std_residuals": fit["std_residuals"],
+        "outlier_indices": fit["outlier_indices"],
+    }
+
+
+def _public_surface_diagnostics(diagnostics: dict) -> dict:
+    """The JSON-safe part of a shore-point surface's diagnostics, for
+    run_parameters.json: the full fit statistics and coefficients. S is in
+    meters a.s.l. as a polynomial of the local frame's east/north km
+    (`per_km`); `scaled` are the coefficients of the (e/L, n/L) basis actually solved."""
+    fit = diagnostics["fit"]
+    per_km = unscaled_coeffs(fit)
+    return {
+        "type": "points",
+        "fit": {
+            **_selected_fit(fit),
+            "L_km": fit["L"],
+            "coefficients": [
+                {"east_power": a, "north_power": b, "scaled": c, "per_km": per_km[(a, b)]}
+                for (a, b), c in zip(fit["monomials"], fit["coeffs"])
+            ],
+        },
+        "orders": [_fit_summary(f) for f in diagnostics["orders"]],
+        "dem_fraction_outside_hull": diagnostics["dem_fraction_outside_hull"],
+        "origin_inside_hull": diagnostics["origin_inside_hull"],
+    }
+
+
+def _shore_points_csv(direction: dict, residuals_m: list) -> str:
+    """The points a run fitted, so the bundle alone reproduces it. Re-importable:
+    the header names are ones the frontend's importer matches."""
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\n")
+    writer.writerow(["lat", "lon", "elevation_m", "label", "residual_m"])
+    for p, r in zip(direction["points"], residuals_m):
+        writer.writerow([repr(p["lat"]), repr(p["lon"]), repr(p["elevation_m"]),
+                         p.get("label") or "", repr(float(r))])
+    return out.getvalue()
 
 
 def _input_file_name(filename: str | None) -> str | None:
@@ -317,6 +380,23 @@ async def process(
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
 
+    # --- Shore-point surface: built here for the same reason (it needs the working
+    # raster's geometry, and its frame must match the run's exactly). ---
+    surface_diagnostics = None
+    if parsed_tilt_model is not None and parsed_tilt_model["direction"]["type"] == "points":
+        try:
+            with rasterio.open(working_path) as src:
+                transform, shape = src.transform, (src.height, src.width)
+            with warnings.catch_warnings(record=True) as built:
+                warnings.simplefilter("always")
+                uplift_model, surface_diagnostics = await run_in_threadpool(
+                    build_surface_model_from_spec, parsed_tilt_model,
+                    (origin_lon, origin_lat), transform, shape,
+                )
+            build_warnings = [str(w.message) for w in built]
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
     output_path = os.path.join(job_dir, "output.gpkg")
 
     # --- Run the (blocking, CPU-bound) backend pipeline off the event loop ---
@@ -370,6 +450,14 @@ async def process(
             "misfit_max_deg": diagnostics["misfit_max_deg"],
             "worst_vector": diagnostics["worst_vector"],  # 0-based index into the submitted vectors
         })
+    if surface_diagnostics is not None:
+        fit = surface_diagnostics["fit"]
+        headers["X-Tilt-Model-Diagnostics"] = json.dumps({
+            "order": fit["order"],
+            "r2": _finite_or_none(fit["r2"]),
+            "rmse_m": _finite_or_none(fit["rmse_m"]),
+            "dem_fraction_outside_hull": surface_diagnostics["dem_fraction_outside_hull"],
+        })
     if sampled_elevation is not None:
         headers["X-Target-Elevation-Source"] = "dem"
         if abs(sampled_elevation - target_elevation) > 1e-6:
@@ -420,7 +508,13 @@ async def process(
             "hinge_source": None if uplift_model is None else uplift_model.hinge_source,
             # Vectors mode only: fit quality of the direction field (per-vector
             # misfit, degrees; null for a vector outside the working grid).
-            "diagnostics": None if diagnostics is None else _public_diagnostics(diagnostics),
+            # Vectors mode: per-vector misfit. Points mode: the full fit statistics
+            # and coefficients (the points themselves are in shore_points.csv).
+            "diagnostics": (
+                _public_diagnostics(diagnostics) if diagnostics is not None
+                else None if surface_diagnostics is None
+                else _public_surface_diagnostics(surface_diagnostics)
+            ),
             "include_dem": include_dem,
             "selection_radius_km": selection_radius_km,
             "reprojected": {
@@ -428,6 +522,9 @@ async def process(
                 "from_crs": prep.original_crs if prep.was_reprojected else None,
             },
         }, indent=2))
+        if surface_diagnostics is not None:
+            zf.writestr("shore_points.csv", _shore_points_csv(
+                parsed_tilt_model["direction"], surface_diagnostics["fit"]["residuals_m"]))
         if include_dem:
             preview_bytes = build_preview_geotiff_bytes(f"GPKG:{output_path}:modified_dem")
             zf.writestr("preview_tilted.tif", preview_bytes)
@@ -782,8 +879,10 @@ async def profile_preview(body: ProfilePreviewRequest):
     try:
         parsed = validate_tilt_model(body.tilt_model, body.tilt_factor, body.tilt_azimuth)
         if parsed["direction"]["type"] != "azimuth":
+            use = ("/api/fit-uplift-surface" if parsed["direction"]["type"] == "points"
+                   else "/api/uplift-preview")
             raise TiltModelError(
-                "/api/profile-preview is for direction.type 'azimuth'; use /api/uplift-preview "
+                f"/api/profile-preview is for direction.type 'azimuth'; use {use} "
                 f"for '{parsed['direction']['type']}'."
             )
         with warnings.catch_warnings(record=True) as caught:
@@ -862,7 +961,7 @@ async def uplift_preview(body: UpliftPreviewRequest):
         if parsed["direction"]["type"] != "vectors":
             raise TiltModelError(
                 "/api/uplift-preview is for direction.type 'vectors'; use /api/profile-preview "
-                "for a single azimuth."
+                "for a single azimuth, or /api/fit-uplift-surface for shore points."
             )
         diagnostics, isobases, interval, messages = await run_in_threadpool(
             _build_uplift_preview, parsed, body.tilt_factor, body.origin, body.bounds_wgs84,
@@ -882,6 +981,61 @@ async def uplift_preview(body: UpliftPreviewRequest):
         "degenerate_fraction": diagnostics["degenerate_fraction"],
         "hinge_km": diagnostics["hinge_km"],
         "hinge_source": diagnostics["hinge_source"],
+        "warnings": list(dict.fromkeys(messages)),
+    }
+
+
+class FitSurfaceRequest(BaseModel):
+    points: list[dict]  # [{lat, lon, elevation_m, label?}]; validated by api/tilt_model.py
+    order: Any
+    origin: list[float]  # [lon, lat]
+    bounds_wgs84: list[float]  # [west, south, east, north]
+    hinge: Any = None  # 'none' | 'origin'
+    extrapolation: Any = None  # 'warn' | 'mask'
+
+
+def _build_surface_preview(parsed, origin, bounds):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        transform = rasterio.transform.from_bounds(*bounds, PREVIEW_RASTER_SHAPE[1], PREVIEW_RASTER_SHAPE[0])
+        model, diagnostics = build_surface_model_from_spec(
+            parsed, tuple(origin), transform, PREVIEW_RASTER_SHAPE,
+        )
+    isobases, interval, hull = surface_isobases_geojson(model, diagnostics)
+    return diagnostics, isobases, interval, hull, [str(w.message) for w in caught]
+
+
+@app.post("/api/fit-uplift-surface")
+async def fit_uplift_surface(body: FitSurfaceRequest):
+    # --- No raster I/O: the fit statistics (every order the point count allows),
+    # residuals, isobases of the fitted surface and the data hull, for the map and
+    # the tilt section. Built from the preflight bounds through the same code a run
+    # uses, so it agrees exactly for an EPSG:4326 DEM (and negligibly differs for a
+    # reprojected one; the run is authoritative). ---
+    _check_origin_and_bounds(body.origin, body.bounds_wgs84)
+
+    try:
+        parsed = validate_tilt_model({
+            "version": 1,
+            "direction": {
+                "type": "points", "points": body.points, "order": body.order,
+                "hinge": body.hinge, "extrapolation": body.extrapolation,
+            },
+        }, None)
+        diagnostics, isobases, interval, hull, messages = await run_in_threadpool(
+            _build_surface_preview, parsed, body.origin, body.bounds_wgs84,
+        )
+    except (TiltModelError, ValueError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return {
+        "orders": [_fit_summary(f) for f in diagnostics["orders"]],
+        "selected": _selected_fit(diagnostics["fit"]),
+        "isobases": isobases,
+        "interval_m": interval,
+        "hull": hull,
+        "dem_fraction_outside_hull": diagnostics["dem_fraction_outside_hull"],
+        "origin_inside_hull": diagnostics["origin_inside_hull"],
         "warnings": list(dict.fromkeys(messages)),
     }
 

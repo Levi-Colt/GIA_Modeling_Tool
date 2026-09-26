@@ -8,10 +8,12 @@
 // messages) may be tuned to, or point users toward, a particular paper or set of
 // basins. Profile defaults are empty fields and the 'origin' hinge.
 //
-// Spec 5 adds a second direction source, 'vectors' (utils/vectors.js): the
-// dispatchers below (tiltModelIssues, buildTiltModel, describeTiltModel) branch
-// on advanced.directionSource.
+// Spec 5 adds a second direction source, 'vectors' (utils/vectors.js), and spec 6
+// a third, 'points' (utils/shorePoints.js): the dispatchers below (tiltModelIssues,
+// buildTiltModel, describeTiltModel) branch on advanced.directionSource. In 'points'
+// mode magnitude comes from the fitted surface, so no profile or hinge exists.
 import { anyGlobal, buildVectorsDirection, isCustom, normalizeVectors, vectorIssues } from './vectors.js'
+import { EXTRAPOLATIONS, SURFACE_HINGES, buildPointsDirection, normalizeShorePoints, pointIssues, surfaceOf } from './shorePoints.js'
 import { curvatureForm, parseFiniteNumber, parsePositiveNumber, parseSecondGradient } from './numbers.js'
 
 // Re-exported so existing importers keep working.
@@ -19,7 +21,8 @@ export { curvatureForm, parseFiniteNumber, parsePositiveNumber, parseSecondGradi
 
 export const DIRECTION_SOURCES = [
   { value: 'azimuth', label: 'Single azimuth' },
-  { value: 'vectors', label: 'Vectors' }
+  { value: 'vectors', label: 'Vectors' },
+  { value: 'points', label: 'Shore points' }
 ]
 export const DEFAULT_DIRECTION_SOURCE = 'azimuth'
 
@@ -66,13 +69,20 @@ function parts(advanced) {
 }
 
 export function directionSourceOf(advanced) {
-  return advanced?.directionSource === 'vectors' ? 'vectors' : DEFAULT_DIRECTION_SOURCE
+  const source = advanced?.directionSource
+  return source === 'vectors' || source === 'points' ? source : DEFAULT_DIRECTION_SOURCE
 }
 
 // True when the run is Advanced with the vectors direction source. Basic ignores
 // every advanced field, so it is never "using vectors".
 export function usingVectors(formState) {
   return formState.mode === 'advanced' && directionSourceOf(formState.advanced) === 'vectors'
+}
+
+// True when the run is Advanced with the shore-points direction source (no single
+// azimuth, no gradient at the spillway, no profile or hinge).
+export function usingPoints(formState) {
+  return formState.mode === 'advanced' && directionSourceOf(formState.advanced) === 'points'
 }
 
 const vectorsOf = (advanced) => normalizeVectors(advanced?.vectors ?? [])
@@ -122,6 +132,9 @@ function hingeIssues(hinge) {
 // the hinge always applies.
 export function tiltModelIssues(advanced) {
   const { profile, hinge } = parts(advanced)
+  if (directionSourceOf(advanced) === 'points') {
+    return pointIssues(normalizeShorePoints(advanced?.shorePoints), surfaceOf(advanced))
+  }
   if (directionSourceOf(advanced) === 'vectors') {
     const vectors = vectorsOf(advanced)
     return [
@@ -157,6 +170,13 @@ function buildProfile(profile) {
 // gradient at the spillway to build it from).
 export function buildTiltModel(advanced) {
   const { profile, hinge } = parts(advanced)
+  if (directionSourceOf(advanced) === 'points') {
+    // No top-level profile or hinge: the API rejects them in this mode.
+    return {
+      version: 1,
+      direction: buildPointsDirection(normalizeShorePoints(advanced?.shorePoints), surfaceOf(advanced))
+    }
+  }
   const mode = normalizeHingeMode(hinge.mode)
   const hingeOut = { mode, distance_km: mode === 'distance' ? parsePositiveNumber(hinge.distanceKm) : null }
   if (directionSourceOf(advanced) === 'vectors') {
@@ -191,9 +211,24 @@ export function guardNote(hingeKm) {
 // Results-screen parameter line (Advanced only), e.g.
 // "Quadratic, second gradient 1.2 m/km at 150 km · hinge none, zero gradient at −54 km".
 // hingeKm / hingeSource come from the latest profile preview; without them the
-// guard clause is dropped.
-export function describeTiltModel(advanced, hingeKm, hingeSource) {
+// guard clause is dropped. `fit` (points mode) is the latest fit's `selected`
+// statistics, for the R² / RMSE clause.
+export function describeTiltModel(advanced, hingeKm, hingeSource, fit) {
   const { profile, hinge } = parts(advanced)
+  if (directionSourceOf(advanced) === 'points') {
+    const surface = surfaceOf(advanced)
+    const count = normalizeShorePoints(advanced?.shorePoints).length
+    const stats =
+      fit && Number.isFinite(fit.rmse_m)
+        ? `, RMSE ${formatNumber(fit.rmse_m)} m${Number.isFinite(fit.r2) ? `, R² ${fit.r2.toFixed(3)}` : ''}`
+        : ''
+    const behind = SURFACE_HINGES.find((h) => h.value === surface.hinge)?.label.toLowerCase()
+    const outside = EXTRAPOLATIONS.find((e) => e.value === surface.extrapolation)?.label.toLowerCase()
+    return (
+      `Order-${surface.order} surface from ${count} shore ${count === 1 ? 'point' : 'points'}${stats}` +
+      ` · behind spillway: ${behind} · outside the data: ${outside}`
+    )
+  }
   const family = FAMILIES.find((f) => f.value === profile.family)?.label ?? profile.family
   let head = family
   if (profile.family === 'quadratic') {

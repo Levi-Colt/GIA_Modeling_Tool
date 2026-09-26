@@ -94,7 +94,7 @@ def _bad_cases():
         ("[]", "must be a JSON object"),
         (json.dumps(_tm(version=2)), "version must be 1"),
         (json.dumps(_tm(version=True)), "version must be 1"),
-        (json.dumps(_tm(**{"direction.type": "points"})), "direction.type must be one of"),
+        (json.dumps(_tm(**{"direction.type": "rings"})), "direction.type must be one of"),
         (json.dumps({**_tm(), "extra": 1}), "unknown key: 'extra'"),
         (json.dumps(_tm(**{"profile.exponent": 2})), "unknown key: 'profile.exponent'"),
         (json.dumps(_tm(**{"hinge.km": 2})), "unknown key: 'hinge.km'"),

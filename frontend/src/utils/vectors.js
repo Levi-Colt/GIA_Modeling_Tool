@@ -306,18 +306,19 @@ export function parseVectorsCsv(text) {
 }
 
 // "12 imported, 2 skipped: row 5 azimuth missing, row 9 latitude out of range"
-export function describeImport({ vectors, skipped }) {
-  const head = `${vectors.length} imported`
+// Also used for other CSV imports (shore points): `items` is the imported list.
+export function describeImport({ vectors, items = vectors, skipped }) {
+  const head = `${items.length} imported`
   if (skipped.length === 0) return head
   const shown = skipped.slice(0, 5).map((s) => `row ${s.row} ${s.reason}`)
   const more = skipped.length > 5 ? `, and ${skipped.length - 5} more` : ''
   return `${head}, ${skipped.length} skipped: ${shown.join(', ')}${more}`
 }
 
-// Replace or append, never past MAX_VECTORS.
-export function applyImport(existing, imported, mode) {
+// Replace or append, never past `limit` (MAX_VECTORS unless another list says so).
+export function applyImport(existing, imported, mode, limit = MAX_VECTORS) {
   const next = mode === 'append' ? [...existing, ...imported] : [...imported]
-  return next.slice(0, MAX_VECTORS)
+  return next.slice(0, limit)
 }
 
 // Label for an isobase's relative uplift: "+40 m", "−20 m", "0 m".

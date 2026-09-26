@@ -14,7 +14,7 @@
 - `api/`: FastAPI layer wrapping the backend. Routes: `POST /api/process`,
   `POST /api/preflight`, `POST /api/resolve-point`, `POST /api/raster-preview`,
   `POST /api/origin-elevation`, `POST /api/profile-preview`,
-  `POST /api/uplift-preview`, `GET /api/health`.
+  `POST /api/uplift-preview`, `POST /api/fit-uplift-surface`, `GET /api/health`.
   See `documentation/api-README.md` for the full request/response contract.
 - `frontend/`: React (JS, not TS) + Vite + Tailwind + Leaflet (map panel).
   See `documentation/frontend-README.md` for structure and what's
@@ -230,7 +230,7 @@
   different for a reprojected one; if they ever diverge, trust the run.
 - **Vector direction fields — frontend** (spec 5). `TiltModelBody` (still the
   one tilt-model extension point) starts with a Direction-source switch, `Single
-  azimuth | Vectors`; spec 6 adds Shore points there. State: `advanced.
+  azimuth | Vectors | Shore points` (the third is spec 6, next entry). State: `advanced.
   directionSource` and `advanced.vectors` (persisted; every field a string, rows
   have stable `id`s — `utils/vectors.js` owns the row model, readiness
   (`vectorIssues`), the payload (`buildVectorsDirection`), CSV import (papaparse;
@@ -258,8 +258,88 @@
   editing vectors doesn't rebuild the raster) and refits only when the contour,
   raster base or extent changes; `App.jsx` memoizes each `mapData` field for that.
   Layer order: raster → selection radius → isobases → contour → vectors → azimuth
-  line (azimuth source only) → origin. Range is influence, not magnitude, and
-  custom gradients are local — in every label and help text.
+  line (azimuth source only) → origin (spec 6 inserts the data hull below the
+  isobases and the shore points above the vectors; see the next entry). Range is
+  influence, not magnitude, and custom gradients are local — in every label and
+  help text.
+- **Shore-point uplift surfaces** (`backend/uplift_surface.py`,
+  `documentation/SHORE_POINT_SURFACE_SPEC.md`, spec 6; backend, API and frontend
+  are all done). A third `tilt_model.direction.type`, `points`: users with
+  shoreline elevation data fit the deformed water plane directly instead of
+  describing it with directions and profiles. **The fit is a polynomial trend
+  surface of order 1, 2 or 3 (least squares in the (e/L, n/L) basis, constant term
+  included), not an exact interpolating spline** — shoreline elevations scatter,
+  and an exact fit would chase that noise. **Magnitude comes from the data**: no
+  profile family, no `tilt_factor`; the API rejects a top-level `profile`/`hinge`
+  in this mode (422), and neither `tilt_azimuth` nor `tilt_factor` is required.
+  All of it is in `_local_en_km`'s frame with the run's own `diagonal_km`.
+  **`U = S(e, n) − S(origin)`** (`U(origin) == 0`, so the DEM-authoritative target
+  elevation holds), the tilted DEM is `DEM − U`, and `S` is evaluated analytically
+  per pixel (`SurfaceUpliftModel`, grouped by n-power so a separable input stays
+  cheap). **The isobases the user sees are contours of `S`** (absolute meters
+  a.s.l.); the model itself uses `U` — don't conflate them (spec 5's isobases are
+  relative uplift). Defaults: **hinge `none`** (U as fitted on both sides of the
+  spillway; `origin` clamps `U ≥ 0`) and **extrapolation `warn`** (`mask` NaNs the
+  tilted DEM outside the hull). Hull = convex hull of the points buffered by
+  `HULL_BUFFER_FRACTION` (10% of its diameter; first-pass, untuned), rasterized on
+  a **1024-cell grid** (`HULL_MASK_CELLS`) — finer than spec 5's 256-cell working
+  grid, so a masked edge isn't visibly stair-stepped; the same grid gives
+  `dem_fraction_outside_hull`; `warn` mode warns above 20%. Minimum points =
+  terms + 3 (6, 9, 13); a near-collinear/clustered set (cond > 1e8) warns; so does
+  the origin lying outside the hull (an addition to the spec: `U(origin) = 0` holds
+  by construction but `S` is extrapolated there). Standardized residuals are
+  `r / sqrt(SSE/dof)`, flagged beyond ±3 and **never auto-removed** (with few
+  degrees of freedom |r/s| can't reach 3, so flagging mostly matters for larger
+  sets). `POST /api/fit-uplift-surface` returns every feasible order's statistics
+  (the UI's advisory comparison table), the selected order's residuals, isobases
+  split `inside`/`outside` the hull (dashed on the map; `outside` is always empty
+  in `mask`), the hull polygon and warnings — no raster I/O, same "trust the run"
+  preview-vs-run caveat as spec 5. `/api/process` adds `X-Tilt-Model-Diagnostics`
+  (order, R², RMSE, outside fraction), the full fit statistics and coefficients in
+  `run_parameters.json` `diagnostics`, and **`shore_points.csv` in the zip** (lat,
+  lon, elevation_m, label, residual_m — re-importable) so the bundle alone
+  reproduces the run. **Approved deviations from the spec:** (1) the model is built
+  in `api/main.py` after reprojection (as spec 5), not in `backend/app.py`; (2) the
+  hull mask grid is 1024 cells (above); (3) two small spec-5 helpers were extracted
+  with identical behaviour — `working_grid` and `contour_lines_frame`/
+  `contour_lines_lonlat` in `backend/direction_field.py` — and the surface's own
+  isobase function lives in `uplift_surface.py`; (4) the origin-outside-hull
+  warning; (5) shore-point rows carry a stable `id` and string fields (like
+  vectors). **`extract_strandline_contours` does NOT exclude NaN regions** (the
+  spec assumed it did): the contour tracing a valid/NaN boundary sits ~0.0002 px
+  inside the valid side, rounds onto a valid cell and slips past the whole-line
+  NaN check, and a real strandline reaching that boundary is one polyline with it.
+  So `extract_strandline_contours[_windowed]` take a defaulted
+  **`trim_nan_edges=False`** (drop every vertex with a NaN among its four
+  surrounding cells and split there), and `process_dem` turns it on only when the
+  model has `masks_outside` (only the surface model in `mask` mode) — the basic
+  path stays identical. Frontend: `advanced.shorePoints` (rows `{ id, lat, lon,
+  elevationM, label }`, all strings) and `advanced.surface` (`{ order: 2, hinge:
+  'none', extrapolation: 'warn' }`) are persisted (a localStorage quota failure
+  only costs the carry-forward); **the fit response is the transient top-level
+  `surfaceFit` key** (in `TRANSIENT_KEYS`), stored as `{ status, data, error, key }`
+  where `key` is the request it answers — residuals and colors are used only when
+  `key` matches the current request (`surfaceFitKey`), while the isobases and hull
+  keep showing the last data while a refit is pending. `useSurfaceFit` (debounced
+  500 ms; stale responses dropped) mirrors `useUpliftPreview`. `usingPoints(formState)`
+  = Advanced + points source. Readiness (keyed to `tilt`): at least the minimum for
+  the chosen order and every point valid; the payload sends neither `tilt_azimuth`
+  nor `tilt_factor` and `tilt_model` has no `profile`/`hinge` (`label` only when
+  present). `utils/shorePoints.js` owns the row model, readiness, payload, CSV
+  parsing (`parseShorePointsCsv(text, mapping?)`: header aliases, then a column
+  picker over the file's own headers — columns addressed by index, so duplicate or
+  blank headers work) and the map adapter; `components/advanced/CsvImport.jsx` is now
+  the schema-agnostic `CsvImportPanel` (the vectors import is a thin wrapper);
+  `ShorePointsPanel.jsx` (in `TiltModelBody`, which hides the profile/hinge blocks
+  and shows "Magnitude comes from the fitted surface.") holds the order control
+  (infeasible orders disabled with a tooltip), comparison table, options and the
+  editable/sortable table. `MapPanel`'s `mapData` gains `shorePoints` (circles
+  colored blue↔orange by residual via `utils/colors.js`; outliers ringed, drawn
+  last; tooltips are DOM text, never HTML — a label is user data), `surfaceIsobases`
+  (`{ inside, outside }`, absolute-meter labels) and `dataHull`, plus a residual
+  legend; panes are now radius → hull → isobases → contour → vectors → points →
+  azimuth → origin; still render-only (no map editing in this mode). Location-
+  agnostic rule applies: no UI text or 422 message names a basin.
 - Temp storage is job-scoped, under a configurable GIA_STORAGE_DIR env var
   (defaults to OS temp dir) — environment-agnostic re: eventual CryoCloud hosting.
 - File input is dual: drag-and-drop upload and a typed server-side path are
@@ -272,7 +352,9 @@
 - Map visualization panel (`frontend/src/components/map/MapPanel.jsx`) is an
   intentionally dumb, pipeline-agnostic component — it never calls into
   geoprocessing logic, just renders whatever `{extent, rasterPreview,
-  origin, azimuthLine, contour, tiltedRasterPreview, selectionRadius}` shape it's handed
+  origin, azimuthLine, contour, tiltedRasterPreview, selectionRadius}` (plus, for the
+  vectors and shore-points sources, `vectors`/`isobases` and `shorePoints`/
+  `surfaceIsobases`/`dataHull`) shape it's handed
   (vanilla Leaflet, no `react-leaflet`). Input-preview (extent from
   `/api/preflight`, raster from `/api/raster-preview`, origin from
   `/api/resolve-point`, azimuth line computed client-side) and
@@ -365,6 +447,15 @@
   modes.
 
 ## Open items
+- `extract_strandline_contours` keeps the contour that traces a valid/NaN edge for
+  *real* nodata borders too (a pre-existing behaviour, found in spec 6 — see the
+  shore-point entry). `trim_nan_edges` is only switched on for masking models; whether
+  to switch it on for every run (it changes contours for any DEM with nodata borders)
+  is undecided — ask before doing it.
+- `HULL_BUFFER_FRACTION` / `HULL_WARN_FRACTION` / `HULL_MASK_CELLS` /
+  `EXTRA_BYTES_PER_PIXEL` (in `backend/uplift_surface.py`) are first-pass values,
+  not tuned against a real shoreline data set or a large DEM. Revisit with the
+  CryoCloud real-data milestone below.
 - Sync vs. async processing for very large DEMs — currently synchronous
   (threadpool-backed), not yet needing a job-queue/polling pattern. The
   frontend's loading state is deliberately indeterminate to match this.

@@ -1,6 +1,6 @@
 import Banner from '../shared/Banner.jsx'
 import { parseSelectionRadiusKm } from '../../utils/readiness.js'
-import { describeTiltModel, usingVectors } from '../../utils/tiltModel.js'
+import { describeTiltModel, usingPoints, usingVectors } from '../../utils/tiltModel.js'
 
 function triggerDownload(blob, filename) {
   const url = URL.createObjectURL(blob)
@@ -52,6 +52,8 @@ export default function ResultsSuccess({ result, formState, onRunAgain, onAdjust
       <p className="text-xs text-gray-500">
         {usingVectors(formState) ? (
           <>Vector directions</>
+        ) : usingPoints(formState) ? (
+          <>Shore-point surface</>
         ) : (
           <>Azimuth {formState.tiltAzimuth}&deg; &middot; Tilt {formState.tiltFactor} m/km</>
         )}{' '}
@@ -62,7 +64,8 @@ export default function ResultsSuccess({ result, formState, onRunAgain, onAdjust
           <> &middot; {describeTiltModel(
               formState.advanced,
               (usingVectors(formState) ? formState.upliftPreview : formState.profilePreview)?.data?.hinge_km,
-              (usingVectors(formState) ? formState.upliftPreview : formState.profilePreview)?.data?.hinge_source
+              (usingVectors(formState) ? formState.upliftPreview : formState.profilePreview)?.data?.hinge_source,
+              formState.surfaceFit?.data?.selected
             )}</>
         )}
       </p>

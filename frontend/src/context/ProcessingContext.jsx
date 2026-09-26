@@ -7,6 +7,7 @@ import {
   normalizeHingeMode
 } from '../utils/tiltModel.js'
 import { normalizeVectors, popUndo, pushUndo } from '../utils/vectors.js'
+import { DEFAULT_SURFACE, normalizeShorePoints } from '../utils/shorePoints.js'
 
 const STORAGE_KEY = 'gia-tool:last-run'
 
@@ -69,7 +70,14 @@ const defaultState = {
     // Selection, add-on-map mode and the preview are transient, so they live at
     // the top level below (TRANSIENT_KEYS only excludes top-level keys).
     directionSource: DEFAULT_DIRECTION_SOURCE,
-    vectors: []
+    vectors: [],
+    // Shore points (documentation/SHORE_POINT_SURFACE_SPEC.md, spec 6), used when
+    // directionSource is 'points': rows { id, lat, lon, elevationM, label } (all
+    // strings, like vectors) and the fit options. Persisted; a localStorage quota
+    // failure only costs the carry-forward (commit() catches it). The fit response
+    // is transient (surfaceFit below).
+    shorePoints: [],
+    surface: DEFAULT_SURFACE
   },
   // Latest /api/profile-preview result for the tilt-model chart:
   // { status: 'loading' | 'ready' | 'error', data, error } | null. Transient.
@@ -80,6 +88,10 @@ const defaultState = {
   // Latest /api/uplift-preview result (vectors mode): the map's isobases and the
   // per-vector fit. Same shape as profilePreview. Transient.
   upliftPreview: null,
+  // Latest /api/fit-uplift-surface result (shore-points mode): the comparison of
+  // orders, residuals, isobases and hull. { status, data, error, key } | null; `key`
+  // is the request it answers, so a stale answer is never drawn as current. Transient.
+  surfaceFit: null,
   // Vector-table / map interaction state, all transient (a reload never
   // restores a selection, an armed "Add on map", or a pending focus request).
   selectedVectorId: null,
@@ -103,6 +115,7 @@ const TRANSIENT_KEYS = [
   'resolvedOrigin',
   'profilePreview',
   'upliftPreview',
+  'surfaceFit',
   'selectedVectorId',
   'mapEditMode',
   'vectorFocusRequest'
@@ -140,6 +153,7 @@ function loadCarriedForwardState() {
     advanced.hinge = { ...advanced.hinge, mode: normalizeHingeMode(advanced.hinge?.mode) }
     // Every saved vector gets an id and all keys (deepMerge replaces arrays wholesale).
     advanced.vectors = normalizeVectors(advanced.vectors)
+    advanced.shorePoints = normalizeShorePoints(advanced.shorePoints)
     advanced.directionSource = directionSourceOf(advanced)
     return { ...defaultState, ...parsed, advanced }
   } catch {

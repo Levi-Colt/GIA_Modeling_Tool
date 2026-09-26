@@ -163,12 +163,19 @@ def _half_masked_ramp(cols=100, masked_from=70):
     return array, from_origin(0.0, float(cols), 1.0, 1.0)
 
 
-def test_default_keeps_the_contour_that_traces_a_nan_edge():
-    # Pins the behavior trim_nan_edges exists for: the valid/NaN boundary contour sits
-    # ~0.0002 px inside the valid side, rounds onto a valid cell, and is not filtered.
+def test_without_trimming_the_contour_that_traces_a_nan_edge_is_kept():
+    # Documents what trim_nan_edges exists for: the valid/NaN boundary contour sits
+    # ~0.0002 px inside the valid side, rounds onto a valid cell, and slips past the
+    # whole-line NaN check.
     array, transform = _half_masked_ramp()
-    contours = extract_strandline_contours(array, transform, target_elevation=50.0)
+    contours = extract_strandline_contours(array, transform, target_elevation=50.0, trim_nan_edges=False)
     assert sorted(round(c[:, 0].mean(), 1) for c in contours) == [50.5, 69.5]
+
+
+def test_trimming_is_the_default_for_every_run():
+    array, transform = _half_masked_ramp()
+    default = extract_strandline_contours(array, transform, target_elevation=50.0)
+    assert [round(c[:, 0].mean(), 1) for c in default] == [50.5]
 
 
 def test_trim_nan_edges_drops_the_edge_contour_and_keeps_the_strandline():

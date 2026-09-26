@@ -25,7 +25,8 @@ Extrapolation guard: polynomial surfaces diverge quickly outside their data, so
 the convex hull of the points (buffered by HULL_BUFFER_FRACTION of its diameter)
 is rasterized onto the DEM. `warn` computes everywhere and reports how much of
 the DEM lies outside; `mask` sets the tilted DEM to NaN there (process_dem then
-trims the contour step at those edges -- see `masks_outside`).
+the contour step trims valid/NaN edges for every run -- see
+`extract_strandline_contours`'s `trim_nan_edges`).
 
 Pure numpy/scipy/shapely/pyproj: no FastAPI or Pydantic (validation lives in
 api/tilt_model.py, which hands this module plain dicts).

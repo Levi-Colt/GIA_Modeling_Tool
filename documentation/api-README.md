@@ -457,10 +457,11 @@ its diameter (`HULL_BUFFER_FRACTION`, a first-pass value) and rasterized onto th
 DEM (a 1024-cell grid, so a masked edge is not visibly stair-stepped).
 `warn` computes everywhere and warns when more than 20% of the DEM is outside;
 `mask` sets the tilted DEM to NaN outside the hull (no contours there; a warning
-gives the percentage, and a `422` says so if the whole DEM would be masked). Mask
-mode also switches on the contour step's NaN-edge trim
-(`extract_strandline_contours(..., trim_nan_edges=True)`): without it the contour
-that follows a valid/NaN boundary would be drawn along the hull edge. Also warned:
+gives the percentage, and a `422` says so if the whole DEM would be masked). The
+contour step trims valid/NaN edges in every run
+(`extract_strandline_contours(..., trim_nan_edges=True)`, the default): without it the
+contour that follows a valid/NaN boundary would be drawn along the hull edge (and
+along real nodata borders). Also warned:
 the origin outside the hull (the surface is extrapolated to it) and a
 near-collinear or clustered set (condition number above 1e8).
 

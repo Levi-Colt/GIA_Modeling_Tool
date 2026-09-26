@@ -222,7 +222,7 @@ def tilt_DEM_windowed(DEM_path, output_path, origin_coords, tilt_azimuth, tilt_f
 
 
 def extract_strandline_contours_windowed(tilted_DEM_path, target_elevation, tile_size=1024, halo=32,
-                                         trim_nan_edges=False):
+                                         trim_nan_edges=True):
     """
     Extracts strandline contours tile-by-tile from a large tilted DEM, using a
     padded "halo" read around each tile so contours crossing tile boundaries
@@ -623,7 +623,7 @@ def _split_at_nan_edges(rows, cols, nan_mask):
     return pieces
 
 
-def extract_strandline_contours(tilted_DEM, transform, target_elevation, trim_nan_edges=False):
+def extract_strandline_contours(tilted_DEM, transform, target_elevation, trim_nan_edges=True):
     """
     Extracts continuous strandline paths at a target paleo-elevation.
     Automatically translates pixel vectors back into geospatial coordinates.
@@ -632,9 +632,10 @@ def extract_strandline_contours(tilted_DEM, transform, target_elevation, trim_na
     so the contour that follows a valid/NaN boundary sits ~0.0002 px inside the
     valid side, rounds onto a valid cell, and slips past the whole-line NaN check
     below (and a real strandline reaching that boundary is one polyline with it).
-    True drops every vertex adjacent to NaN and splits the line there, leaving
-    only the strandline itself. Off by default so existing runs are unchanged;
-    process_dem turns it on for models that mask cells (spec 6's `mask` mode).
+    True (the default, for every run) drops every vertex adjacent to NaN and splits
+    the line there, leaving only the strandline itself. This applies to real nodata
+    borders as well as to cells a model masks (spec 6's `mask` mode). False is the
+    pre-spec-6 behaviour (whole-line NaN check only), kept for comparison.
     """
     # 1. Prevent contour artifacts by handling NaNs defensively.
     # Instead of an extreme value like -9999, we interpolate or use a value 

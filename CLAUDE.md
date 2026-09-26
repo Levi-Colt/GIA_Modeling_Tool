@@ -309,11 +309,15 @@
   spec assumed it did): the contour tracing a valid/NaN boundary sits ~0.0002 px
   inside the valid side, rounds onto a valid cell and slips past the whole-line
   NaN check, and a real strandline reaching that boundary is one polyline with it.
-  So `extract_strandline_contours[_windowed]` take a defaulted
-  **`trim_nan_edges=False`** (drop every vertex with a NaN among its four
-  surrounding cells and split there), and `process_dem` turns it on only when the
-  model has `masks_outside` (only the surface model in `mask` mode) — the basic
-  path stays identical. Frontend: `advanced.shorePoints` (rows `{ id, lat, lon,
+  So `extract_strandline_contours[_windowed]` take **`trim_nan_edges`** (drop every
+  vertex with a NaN among its four surrounding cells and split the line there),
+  which is **on by default, for every run** (decided after spec 6: it also removes
+  the same spurious edge line next to real nodata borders in ordinary DEMs, and a
+  strandline that touches a nodata cell is now kept minus the touched part instead of
+  dropped whole). `trim_nan_edges=False` is the pre-spec-6 behaviour, kept for
+  comparison/tests. This is the one place the basic path's *contours* deliberately
+  differ from before spec 6 (only for DEMs with nodata); the tilt arithmetic is
+  unchanged. Frontend: `advanced.shorePoints` (rows `{ id, lat, lon,
   elevationM, label }`, all strings) and `advanced.surface` (`{ order: 2, hinge:
   'none', extrapolation: 'warn' }`) are persisted (a localStorage quota failure
   only costs the carry-forward); **the fit response is the transient top-level
@@ -447,11 +451,6 @@
   modes.
 
 ## Open items
-- `extract_strandline_contours` keeps the contour that traces a valid/NaN edge for
-  *real* nodata borders too (a pre-existing behaviour, found in spec 6 — see the
-  shore-point entry). `trim_nan_edges` is only switched on for masking models; whether
-  to switch it on for every run (it changes contours for any DEM with nodata borders)
-  is undecided — ask before doing it.
 - `HULL_BUFFER_FRACTION` / `HULL_WARN_FRACTION` / `HULL_MASK_CELLS` /
   `EXTRA_BYTES_PER_PIXEL` (in `backend/uplift_surface.py`) are first-pass values,
   not tuned against a real shoreline data set or a large DEM. Revisit with the

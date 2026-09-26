@@ -49,6 +49,15 @@
   via `StaticFiles`), so there's one process/port to proxy, not two. Vite
   dev server is for local hot-reload only, proxying `/api` to a local
   FastAPI instance — irrelevant to the CryoCloud deployment path.
+- **`vite.config.js` aliases `proj4` to `proj4/dist/proj4-src.js`** (do not remove).
+  proj4 2.21 ships its ESM entry with only a `default` export, and
+  `proj4-fully-loaded` (a `georaster-layer-for-leaflet` dependency) `require()`s it;
+  in a *production* build Rollup's CommonJS interop gave it a function wrapper with
+  `.default` but no `.defs`, which its own unwrap check (`typeof === 'object'`)
+  misses, so the bundle threw `x.defs is not a function` at load and the built app
+  was a blank page (present since before spec 4; `npm run dev` uses esbuild's
+  interop and never showed it). Verify a build by loading it through FastAPI in a
+  real browser, not just `npm run build` — jsdom/Vitest can't see this class of bug.
 - **Routing is relative everywhere** — no leading-slash paths anywhere in
   the frontend (see `frontend/src/api/client.js` comments). Required
   because `jupyter-server-proxy` serves the app under a per-user path
@@ -356,14 +365,6 @@
   modes.
 
 ## Open items
-- **The production build renders a blank page in Chrome** (found while browser-
-  testing spec 5, present at the spec-4 commit too, so not caused by it): the
-  bundle throws `x.defs is not a function` at load — the `proj4.defs(...)` call in
-  `proj4-fully-loaded` (a dependency of `georaster-layer-for-leaflet`) gets a
-  non-function from its `proj4` import under Vite 5.4.21's production build (proj4
-  2.21.0). `npm run dev` works.
-  Unfixed; the FastAPI-serves-`frontend/dist` path needs it fixed before
-  CryoCloud use.
 - Sync vs. async processing for very large DEMs — currently synchronous
   (threadpool-backed), not yet needing a job-queue/polling pattern. The
   frontend's loading state is deliberately indeterminate to match this.

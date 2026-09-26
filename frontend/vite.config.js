@@ -8,6 +8,17 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   base: './',
   plugins: [react()],
+  resolve: {
+    // proj4 2.21 ships its ESM entry with only a `default` export, and
+    // proj4-fully-loaded (a georaster-layer-for-leaflet dependency) `require()`s
+    // it. In a production build Rollup's CommonJS interop then hands it a
+    // *function* wrapper carrying `.default` but not `.defs`, which its own
+    // unwrap check (it only handles `typeof === 'object'`) misses, so the bundle
+    // throws "x.defs is not a function" on load and the page is blank. `npm run
+    // dev` (esbuild's interop) never hit it. Resolving to proj4's real UMD build
+    // gives every importer the same, correct function.
+    alias: [{ find: /^proj4$/, replacement: 'proj4/dist/proj4-src.js' }]
+  },
   server: {
     // Dev-only convenience: forwards /api calls to a local FastAPI instance
     // running on 8000 so `npm run dev` works without CORS juggling. This

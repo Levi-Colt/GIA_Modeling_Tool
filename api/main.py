@@ -33,7 +33,9 @@ from typing import Annotated
 
 import geopandas as gpd
 import numpy as np
+import rasterio
 import rasterio.errors
+import rasterio.transform
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -46,6 +48,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backend.app import process_dem  # noqa: E402  (import after sys.path fixup, see above)
 from backend.main import raster_io_check, check_available_ram_mb, uplift_d_range_km  # noqa: E402
 from backend.uplift import build_uplift_model  # noqa: E402
+from backend.direction_field import build_vector_model_from_spec, isobases_geojson  # noqa: E402
 
 from api.crs import (  # noqa: E402
     normalize_origin_to_wgs84,
@@ -62,7 +65,9 @@ from api.crs import (  # noqa: E402
 )
 from api.storage import create_job_workspace, cleanup_job_workspace, job_workspace  # noqa: E402
 from api.raster_preview import build_preview_geotiff_bytes  # noqa: E402
-from api.tilt_model import TiltModelError, parse_tilt_model, validate_tilt_model  # noqa: E402
+from api.tilt_model import (  # noqa: E402
+    TiltModelError, parse_tilt_model, validate_tilt_model, require_direction_inputs,
+)
 
 app = FastAPI(title="GIA Modeling Tool API")
 
@@ -88,6 +93,21 @@ def _git_commit() -> str | None:
         return commit if out.returncode == 0 and commit else None
     except Exception:
         return None
+
+
+def _public_diagnostics(diagnostics: dict) -> dict:
+    """The JSON-safe part of a vector model's diagnostics (drops the phi grid)."""
+    g = diagnostics["grid"]
+    return {
+        "case": diagnostics["case"],
+        "misfit_deg": diagnostics["misfit_deg"],
+        "misfit_rms_deg": diagnostics["misfit_rms_deg"],
+        "misfit_max_deg": diagnostics["misfit_max_deg"],
+        "worst_vector": diagnostics["worst_vector"],
+        "degenerate_fraction": diagnostics["degenerate_fraction"],
+        "ranges_km": diagnostics["ranges_km"],
+        "grid": {"h_km": g["h"], "nx": g["nx"], "ny": g["ny"]},
+    }
 
 
 def _input_file_name(filename: str | None) -> str | None:
@@ -119,8 +139,20 @@ async def process(
         None,
         description="CRS of origin_value, e.g. 'EPSG:32612'. Required (and only used) when origin_mode == 'epsg'.",
     ),
-    tilt_azimuth: float = Form(..., description="Tilt direction, degrees"),
-    tilt_factor: float = Form(..., description="Meters of elevation change per km"),
+    # Optional in the signature so a `vectors` model can omit them (each is
+    # required by require_direction_inputs when it applies); Annotated, like
+    # tilt_model below, so a direct in-process call that omits one gets a real None.
+    tilt_azimuth: Annotated[
+        float | None,
+        Form(description="Tilt direction, degrees (required unless the model's direction is 'vectors')"),
+    ] = None,
+    tilt_factor: Annotated[
+        float | None,
+        Form(description=(
+            "Meters of elevation change per km at the spillway (required unless every vector has "
+            "a custom tilt)"
+        )),
+    ] = None,
     target_elevation: float = Form(..., description="Paleo-elevation to contour, meters"),
     include_dem: bool = Form(
         True, description="Also embed the tilted DEM as a raster layer in the output"
@@ -174,14 +206,19 @@ async def process(
 
     # --- Parse the optional uplift model and build it now, so a bad or
     # unbuildable model fails fast, before any upload is written. ---
+    # A `vectors` model needs the raster's own geometry, so it is built further
+    # down, once the working raster exists.
     parsed_tilt_model = None
     uplift_model = None
-    if tilt_model is not None:
-        try:
-            parsed_tilt_model = parse_tilt_model(tilt_model, tilt_factor)
-            uplift_model = build_uplift_model(parsed_tilt_model, tilt_azimuth, tilt_factor)
-        except (TiltModelError, ValueError) as e:
-            raise HTTPException(status_code=422, detail=str(e))
+    try:
+        if tilt_model is not None:
+            parsed_tilt_model = parse_tilt_model(tilt_model, tilt_factor, tilt_azimuth)
+            if parsed_tilt_model["direction"]["type"] == "azimuth":
+                uplift_model = build_uplift_model(parsed_tilt_model, tilt_azimuth, tilt_factor)
+        else:
+            require_direction_inputs(None, tilt_azimuth, tilt_factor)
+    except (TiltModelError, ValueError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
     # --- Resolve whatever origin modes don't depend on the raster itself, up
     # front, so malformed input fails fast before any upload happens.
@@ -261,6 +298,25 @@ async def process(
     else:
         effective_target_elevation = target_elevation
 
+    # --- Vector direction field: build the uplift model once, from the working
+    # raster's own transform and shape (the same object then serves every block,
+    # windowed or not). Its warnings and diagnostics ride along with the run's. ---
+    build_warnings = []
+    diagnostics = None
+    if parsed_tilt_model is not None and parsed_tilt_model["direction"]["type"] == "vectors":
+        try:
+            with rasterio.open(working_path) as src:
+                transform, shape = src.transform, (src.height, src.width)
+            with warnings.catch_warnings(record=True) as built:
+                warnings.simplefilter("always")
+                uplift_model, diagnostics = await run_in_threadpool(
+                    build_vector_model_from_spec, parsed_tilt_model, tilt_factor,
+                    (origin_lon, origin_lat), transform, shape,
+                )
+            build_warnings = [str(w.message) for w in built]
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
     output_path = os.path.join(job_dir, "output.gpkg")
 
     # --- Run the (blocking, CPU-bound) backend pipeline off the event loop ---
@@ -271,15 +327,16 @@ async def process(
                 process_dem,
                 file_path=working_path,
                 origin_coords=(origin_lon, origin_lat),
-                tilt_azimuth=tilt_azimuth,
-                tilt_factor=tilt_factor,
+                # Ignored by the math whenever a model is given (vectors mode may omit them).
+                tilt_azimuth=0.0 if tilt_azimuth is None else tilt_azimuth,
+                tilt_factor=0.0 if tilt_factor is None else tilt_factor,
                 target_elevation=effective_target_elevation,
                 output_gpkg_path=output_path,
                 include_dem=include_dem,
                 selection_radius_km=selection_radius_km,
                 uplift_model=uplift_model,
             )
-        backend_warnings = [str(w.message) for w in caught]
+        backend_warnings = build_warnings + [str(w.message) for w in caught]
     except FileNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
@@ -307,6 +364,12 @@ async def process(
         # warning happens to say.
         sanitized_warnings = [" ".join(w.split()) for w in backend_warnings]
         headers["X-Processing-Warnings"] = " | ".join(sanitized_warnings)[:2000]
+    if diagnostics is not None:
+        headers["X-Tilt-Model-Diagnostics"] = json.dumps({
+            "misfit_rms_deg": diagnostics["misfit_rms_deg"],
+            "misfit_max_deg": diagnostics["misfit_max_deg"],
+            "worst_vector": diagnostics["worst_vector"],  # 0-based index into the submitted vectors
+        })
     if sampled_elevation is not None:
         headers["X-Target-Elevation-Source"] = "dem"
         if abs(sampled_elevation - target_elevation) > 1e-6:
@@ -355,6 +418,9 @@ async def process(
             # reached zero first). Null for a basic run, or an unclamped profile.
             "hinge_km": None if uplift_model is None else uplift_model.hinge_d,
             "hinge_source": None if uplift_model is None else uplift_model.hinge_source,
+            # Vectors mode only: fit quality of the direction field (per-vector
+            # misfit, degrees; null for a vector outside the working grid).
+            "diagnostics": None if diagnostics is None else _public_diagnostics(diagnostics),
             "include_dem": include_dem,
             "selection_radius_km": selection_radius_km,
             "reprojected": {
@@ -679,6 +745,18 @@ async def origin_elevation(
         return {"within_bounds": False, "elevation": None, "reason": "outside_bounds"}
 
 
+def _check_origin_and_bounds(origin, bounds_wgs84):
+    if origin is not None and (len(origin) != 2 or not all(math.isfinite(v) for v in origin)):
+        raise HTTPException(status_code=422, detail="origin must be [lon, lat] (finite numbers).")
+    if bounds_wgs84 is not None:
+        b = bounds_wgs84
+        if len(b) != 4 or not all(math.isfinite(v) for v in b) or b[0] >= b[2] or b[1] >= b[3]:
+            raise HTTPException(
+                status_code=422,
+                detail="bounds_wgs84 must be [west, south, east, north] with west < east and south < north.",
+            )
+
+
 class ProfilePreviewRequest(BaseModel):
     tilt_azimuth: float
     tilt_factor: float
@@ -699,20 +777,15 @@ async def profile_preview(body: ProfilePreviewRequest):
     # d-range, so the preview and the run agree. ---
     if not (2 <= body.samples <= 2000):
         raise HTTPException(status_code=422, detail="samples must be between 2 and 2000.")
-    if body.origin is not None and (
-        len(body.origin) != 2 or not all(math.isfinite(v) for v in body.origin)
-    ):
-        raise HTTPException(status_code=422, detail="origin must be [lon, lat] (finite numbers).")
-    if body.bounds_wgs84 is not None:
-        b = body.bounds_wgs84
-        if len(b) != 4 or not all(math.isfinite(v) for v in b) or b[0] >= b[2] or b[1] >= b[3]:
-            raise HTTPException(
-                status_code=422,
-                detail="bounds_wgs84 must be [west, south, east, north] with west < east and south < north.",
-            )
+    _check_origin_and_bounds(body.origin, body.bounds_wgs84)
 
     try:
-        parsed = validate_tilt_model(body.tilt_model, body.tilt_factor)
+        parsed = validate_tilt_model(body.tilt_model, body.tilt_factor, body.tilt_azimuth)
+        if parsed["direction"]["type"] != "azimuth":
+            raise TiltModelError(
+                "/api/profile-preview is for direction.type 'azimuth'; use /api/uplift-preview "
+                f"for '{parsed['direction']['type']}'."
+            )
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             model = build_uplift_model(parsed, body.tilt_azimuth, body.tilt_factor)
@@ -749,6 +822,66 @@ async def profile_preview(body: ProfilePreviewRequest):
         "d_range_km": [float(d_min), float(d_max)],
         "hinge_km": model.hinge_d,
         "hinge_source": model.hinge_source,
+        "warnings": list(dict.fromkeys(messages)),
+    }
+
+
+class UpliftPreviewRequest(BaseModel):
+    tilt_azimuth: float | None = None
+    tilt_factor: float | None = None
+    tilt_model: dict
+    origin: list[float]  # [lon, lat]
+    bounds_wgs84: list[float]  # [west, south, east, north]
+
+
+# Only the bounds matter to the working grid, not the pixel counts.
+PREVIEW_RASTER_SHAPE = (512, 512)
+
+
+def _build_uplift_preview(parsed, tilt_factor, origin, bounds):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        transform = rasterio.transform.from_bounds(*bounds, PREVIEW_RASTER_SHAPE[1], PREVIEW_RASTER_SHAPE[0])
+        model, diagnostics = build_vector_model_from_spec(
+            parsed, tilt_factor, tuple(origin), transform, PREVIEW_RASTER_SHAPE,
+        )
+    isobases, interval = isobases_geojson(model, diagnostics)
+    return diagnostics, isobases, interval, [str(w.message) for w in caught]
+
+
+@app.post("/api/uplift-preview")
+async def uplift_preview(body: UpliftPreviewRequest):
+    # --- No raster I/O: the isobases and fit quality a `vectors` run would
+    # produce, for the map. The grid is built from the preflight bounds through
+    # the same code the run uses, so the two agree exactly for an EPSG:4326 DEM
+    # (and negligibly differ for a reprojected one; the run is authoritative). ---
+    _check_origin_and_bounds(body.origin, body.bounds_wgs84)
+
+    try:
+        parsed = validate_tilt_model(body.tilt_model, body.tilt_factor, body.tilt_azimuth)
+        if parsed["direction"]["type"] != "vectors":
+            raise TiltModelError(
+                "/api/uplift-preview is for direction.type 'vectors'; use /api/profile-preview "
+                "for a single azimuth."
+            )
+        diagnostics, isobases, interval, messages = await run_in_threadpool(
+            _build_uplift_preview, parsed, body.tilt_factor, body.origin, body.bounds_wgs84,
+        )
+    except (TiltModelError, ValueError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return {
+        "isobases": isobases,
+        "interval_m": interval,
+        "vectors": [
+            {"index": i, "misfit_deg": m} for i, m in enumerate(diagnostics["misfit_deg"])
+        ],
+        "misfit_rms_deg": diagnostics["misfit_rms_deg"],
+        "misfit_max_deg": diagnostics["misfit_max_deg"],
+        "worst_vector": diagnostics["worst_vector"],
+        "degenerate_fraction": diagnostics["degenerate_fraction"],
+        "hinge_km": diagnostics["hinge_km"],
+        "hinge_source": diagnostics["hinge_source"],
         "warnings": list(dict.fromkeys(messages)),
     }
 

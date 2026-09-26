@@ -1,7 +1,8 @@
 // Split out from App.jsx so it can be unit-tested without pulling in the
 // rest of App.jsx's module graph (MapPanel -> georaster-layer-for-leaflet,
 // heavy and irrelevant to this pure gating logic).
-import { tiltModelIssues } from './tiltModel.js'
+import { tiltModelIssues, usingVectors } from './tiltModel.js'
+import { anyGlobal, normalizeVectors } from './vectors.js'
 
 // The optional selection radius (km): '' means "no limit"; anything else must
 // be a finite number > 0. Returns that number, or null when empty/invalid.
@@ -24,8 +25,15 @@ export function getReadiness(formState) {
   if (formState.preflightStatus !== 'valid') need('dem', 'a valid DEM')
   if (!formState.originValue) need('origin', 'origin coordinates')
   if (formState.originMode === 'epsg' && !formState.originEpsg) need('origin', 'origin EPSG code')
-  if (!formState.tiltAzimuth) need('tilt', 'tilt azimuth')
-  if (!formState.tiltFactor) need('tilt', 'tilt factor')
+  if (usingVectors(formState)) {
+    // Vectors mode (Advanced only): no single azimuth, and the gradient at the
+    // spillway is needed only while some vector uses the global profile.
+    const vectors = normalizeVectors(formState.advanced.vectors)
+    if (anyGlobal(vectors) && !formState.tiltFactor) need('tilt', 'the global gradient at the spillway')
+  } else {
+    if (!formState.tiltAzimuth) need('tilt', 'tilt azimuth')
+    if (!formState.tiltFactor) need('tilt', 'tilt factor')
+  }
   // Target elevation and the origin elevation check both live in the Origin
   // section (target elevation is DEM-authoritative at the origin).
   if (!formState.targetElevation) need('origin', 'target elevation')
@@ -49,7 +57,7 @@ export function getReadiness(formState) {
   if (formState.mode === 'advanced') {
     // Advanced-only checks (keyed to 'tilt'). They must never run for Basic:
     // advanced-only fields can't affect a Basic run's readiness. Later specs
-    // (vectors, shore points) append their own here.
+    // (shore points) append their own here; vectors are covered by tiltModelIssues.
     for (const text of tiltModelIssues(formState.advanced)) need('tilt', text)
   }
 

@@ -217,7 +217,8 @@ def build_uplift_model(spec, tilt_azimuth, tilt_factor):
 
     direction = (spec.get("direction") or {}).get("type", "azimuth")
     if direction != "azimuth":
-        raise ValueError(f"Unsupported direction type '{direction}'.")
+        # 'vectors' needs the raster's geometry: see backend/direction_field.py.
+        raise ValueError(f"Unsupported direction type '{direction}' for build_uplift_model.")
 
     profile = _profile_from_spec(spec["profile"], tilt_factor)
 

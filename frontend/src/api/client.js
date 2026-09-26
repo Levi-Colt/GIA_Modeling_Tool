@@ -95,6 +95,24 @@ export async function profilePreview(body, { signal } = {}) {
   return res.json()
 }
 
+// Isobases and per-vector fit for the vectors direction source: the spatial
+// counterpart of profilePreview, also pure math with no raster I/O. `body` is
+// { tilt_factor?, tilt_model, origin, bounds_wgs84 } (origin and bounds are both
+// required here); see documentation/api-README.md.
+export async function upliftPreview(body, { signal } = {}) {
+  const res = await fetch(`${API_BASE}uplift-preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}))
+    throw new Error(typeof detail.detail === 'string' ? detail.detail : 'Uplift preview failed')
+  }
+  return res.json()
+}
+
 export async function runProcess(payload) {
   const form = new FormData()
   Object.entries(payload).forEach(([key, value]) => {

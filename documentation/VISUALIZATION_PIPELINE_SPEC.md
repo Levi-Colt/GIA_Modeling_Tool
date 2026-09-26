@@ -61,11 +61,46 @@ Revised:
   azimuthLine,         // [[lon, lat], [lon, lat]] — computed client-side with Turf
   contour,             // GeoJSON FeatureCollection — from /api/process's bundled response
   tiltedRasterPreview, // { georaster } — parsed from /api/process's bundled preview.tif
-  selectionRadius      // { center: [lon, lat], radiusKm } — optional; derived from form state
+  selectionRadius,     // { center: [lon, lat], radiusKm } — optional; derived from form state
                        // (deriveMapDataFromForm), only when origin has resolved and the
                        // radius is a positive number. Not part of the fit-bounds chain.
+  vectors,             // spec 5, optional: [{ id, number, lon, lat, azimuthDeg | null,
+                       // rangeKm | null, lengthKm, selected, custom }] — the vector arrows.
+                       // Built in App.jsx (utils/vectors.js vectorsToMapData); azimuthDeg is
+                       // null for a click-added row, which draws only its base handle.
+                       // lengthKm = rangeKm, else 10% of the DEM diagonal.
+  isobases             // spec 5, optional: GeoJSON FeatureCollection of LineStrings with an
+                       // `uplift_m` property, from /api/uplift-preview; drawn thin and blue,
+                       // labelled at one end ("+40 m"), the spillway's own (0) heavier.
+}
+
+// Optional prop, alongside mapData (vectors mode, form view only; absent on the results
+// view, where the arrows are display-only):
+editing?: {
+  mode: 'none' | 'addVector',
+  onAddVector({ lon, lat, azimuthDeg, rangeKm }),      // azimuthDeg/rangeKm are null for a click
+  onUpdateVector(id, { lon?, lat?, azimuthDeg?, rangeKm? }),
+  onSelectVector(id),
+  onExitAddMode()
 }
 ```
+
+**Vector editing (spec 5).** `MapPanel` still does no geoprocessing: it renders the
+arrows it is given and reports geometry edits through `editing`'s callbacks, once, on
+drag end (layers update imperatively during a drag, so nothing is re-rendered or
+re-requested mid-gesture). Bearing/distance/arrow math is `utils/geometry.js`
+(turf), never inside `MapPanel`. Each arrow has two draggable `L.marker` handles with
+`keyboard: false` (the table is the keyboard path): the numbered **base** handle moves
+the vector, the **tip** handle rotates and resizes it (azimuth and range on drag end).
+Custom-tilt vectors get a filled head, global ones a hollow one; the selected vector is
+thicker and in the accent color; clicking an arrow selects it. **Add on map**
+(`editing.mode === 'addVector'`): crosshair cursor and `map.dragging.disable()`
+(restored on exit); pointer down sets the base, dragging shows a preview arrow with an
+azimuth/length tooltip, pointer up calls `onAddVector` with the geodesic bearing and
+length; a drag under 8 screen px is a click (empty azimuth and range). Add mode stays
+on until Escape (a listener on the map container, not `window`), Done, or the table's
+toggle. Pointer events are used, so touch works. The gestures live in
+`components/map/VectorLayer.js`, owned by `MapPanel`.
 
 `MapPanel` stays a dumb renderer: it takes whatever fields are present and
 draws them, same principle as before, just a wider shape. It still doesn't
@@ -75,8 +110,12 @@ absent because `include_dem` was off.
 Layer order (bottom to top): basemap (own `basemap` pane below tilePane) →
 `rasterPreview` → `tiltedRasterPreview` (when
 present, replaces the input raster as the visible base rather than
-stacking) → `selectionRadius` circle → `contour` → `azimuthLine` → `origin` marker → compass rose
-(fixed UI chrome, not a map layer, always rendered regardless of data).
+stacking) → `selectionRadius` circle → `isobases` → `contour` → `vectors` → `azimuthLine`
+(azimuth direction source only) → `origin` marker → compass rose (fixed UI chrome, not a
+map layer, always rendered regardless of data). Each overlay group has its own Leaflet
+pane and its own effect (keyed on that field's identity), so the stacking order never
+depends on insertion order and editing the vectors never rebuilds the raster; the view
+refits only when the contour, the raster base or the DEM extent changes, not on every edit.
 
 ## Stage 1 — Input preview (extent, origin, azimuth line)
 

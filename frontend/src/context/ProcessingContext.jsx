@@ -1,5 +1,12 @@
 import { createContext, useContext, useRef, useState } from 'react'
-import { DEFAULT_HINGE, DEFAULT_PROFILE, normalizeHingeMode } from '../utils/tiltModel.js'
+import {
+  DEFAULT_DIRECTION_SOURCE,
+  DEFAULT_HINGE,
+  DEFAULT_PROFILE,
+  directionSourceOf,
+  normalizeHingeMode
+} from '../utils/tiltModel.js'
+import { normalizeVectors, popUndo, pushUndo } from '../utils/vectors.js'
 
 const STORAGE_KEY = 'gia-tool:last-run'
 
@@ -55,14 +62,29 @@ const defaultState = {
     // slots keep their typed values.
     profile: DEFAULT_PROFILE,
     // mode: 'origin' | 'distance' | 'none'; the default is 'origin' for every family.
-    hinge: DEFAULT_HINGE
+    hinge: DEFAULT_HINGE,
+    // Direction source (documentation/VECTOR_FIELD_SPEC.md, spec 5):
+    // 'azimuth' uses the top-level tiltAzimuth; 'vectors' uses the list below.
+    // Each vector's fields are strings; the ids link table rows to map arrows.
+    // Selection, add-on-map mode and the preview are transient, so they live at
+    // the top level below (TRANSIENT_KEYS only excludes top-level keys).
+    directionSource: DEFAULT_DIRECTION_SOURCE,
+    vectors: []
   },
   // Latest /api/profile-preview result for the tilt-model chart:
   // { status: 'loading' | 'ready' | 'error', data, error } | null. Transient.
   // Lives at the top level (not under `advanced`) because TRANSIENT_KEYS only
   // excludes top-level keys, and it is read by both the chart and the results
   // screen's hinge summary.
-  profilePreview: null
+  profilePreview: null,
+  // Latest /api/uplift-preview result (vectors mode): the map's isobases and the
+  // per-vector fit. Same shape as profilePreview. Transient.
+  upliftPreview: null,
+  // Vector-table / map interaction state, all transient (a reload never
+  // restores a selection, an armed "Add on map", or a pending focus request).
+  selectedVectorId: null,
+  mapEditMode: 'none', // 'none' | 'addVector'
+  vectorFocusRequest: null // { id, n }: focus that vector's azimuth input
 }
 
 // Keys never written to localStorage: file objects and transient
@@ -79,7 +101,11 @@ const TRANSIENT_KEYS = [
   'elevationCheckValue',
   'resolveOriginStatus',
   'resolvedOrigin',
-  'profilePreview'
+  'profilePreview',
+  'upliftPreview',
+  'selectedVectorId',
+  'mapEditMode',
+  'vectorFocusRequest'
 ]
 
 function isPlainObject(value) {
@@ -112,6 +138,9 @@ function loadCarriedForwardState() {
     // Spec 4a removed the hinge modes 'default' and 'natural'; a save from
     // before that (only ever run locally) maps them to the default, 'origin'.
     advanced.hinge = { ...advanced.hinge, mode: normalizeHingeMode(advanced.hinge?.mode) }
+    // Every saved vector gets an id and all keys (deepMerge replaces arrays wholesale).
+    advanced.vectors = normalizeVectors(advanced.vectors)
+    advanced.directionSource = directionSourceOf(advanced)
     return { ...defaultState, ...parsed, advanced }
   } catch {
     return defaultState
@@ -155,8 +184,64 @@ export function ProcessingProvider({ children }) {
     commit((prev) => ({ ...prev, advanced: { ...prev.advanced, ...patch } }))
   }
 
+  // --- Vector list edits. All go through setVectors so the undo stack (the last
+  // 20 list states, in a ref: it is UI history, not form state) sees the
+  // structural ones. `vectorsRef` mirrors the list synchronously, so two edits in
+  // one tick each start from the previous one's result. ---
+  const vectorsRef = useRef(formState.advanced.vectors)
+  vectorsRef.current = formState.advanced.vectors
+  const undoStack = useRef([])
+  const [undoDepth, setUndoDepth] = useState(0)
+
+  function applyVectors(next) {
+    vectorsRef.current = next
+    commit((prev) => ({
+      ...prev,
+      advanced: { ...prev.advanced, vectors: next },
+      selectedVectorId: next.some((v) => v.id === prev.selectedVectorId) ? prev.selectedVectorId : null
+    }))
+  }
+
+  // update: the new list, or (list) => new list. undoable: true for structural
+  // edits (add, remove, import, map drags); false for typing in a cell.
+  function setVectors(update, { undoable = false } = {}) {
+    const base = vectorsRef.current
+    const next = typeof update === 'function' ? update(base) : update
+    if (next === base) return
+    if (undoable) {
+      undoStack.current = pushUndo(undoStack.current, base)
+      setUndoDepth(undoStack.current.length)
+    }
+    applyVectors(next)
+  }
+
+  function undoVectors() {
+    const { stack, snapshot } = popUndo(undoStack.current)
+    if (snapshot === null) return
+    undoStack.current = stack
+    setUndoDepth(stack.length)
+    applyVectors(snapshot)
+  }
+
+  const selectVector = (id) => updateForm({ selectedVectorId: id })
+  const setMapEditMode = (mode) => updateForm({ mapEditMode: mode })
+  const requestVectorFocus = (id) =>
+    updateForm({ vectorFocusRequest: { id, n: (formState.vectorFocusRequest?.n ?? 0) + 1 } })
+
   return (
-    <ProcessingContext.Provider value={{ formState, updateForm, updateAdvanced }}>
+    <ProcessingContext.Provider
+      value={{
+        formState,
+        updateForm,
+        updateAdvanced,
+        setVectors,
+        undoVectors,
+        undoDepth,
+        selectVector,
+        setMapEditMode,
+        requestVectorFocus
+      }}
+    >
       {children}
     </ProcessingContext.Provider>
   )

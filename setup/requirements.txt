@@ -5,3 +5,4 @@ scikit-image
 geopandas
 psutil
 pyproj
+scipy

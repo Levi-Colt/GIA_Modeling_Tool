@@ -1,18 +1,25 @@
-import { buildTiltModel } from './tiltModel.js'
+import { buildTiltModel, usingVectors } from './tiltModel.js'
+import { allCustom, normalizeVectors } from './vectors.js'
 
 // Builds the multipart fields for POST /api/process from form state. Lives in
 // utils/ (not App.jsx) so it can be unit-tested without App.jsx's module
 // graph (MapPanel -> georaster-layer-for-leaflet).
 //
 // Branches on mode. Basic reads only top-level fields, so anything stored in
-// formState.advanced can never change a Basic run. Advanced currently sends the
-// same fields plus `tilt_model` (a JSON string, as a multipart form field);
-// later specs extend that object for vectors and shore points. Basic never
-// sends it, so the server runs the plain linear tilt.
+// formState.advanced can never change a Basic run. Advanced sends the same
+// fields plus `tilt_model` (a JSON string, as a multipart form field); Basic
+// never sends it, so the server runs the plain linear tilt. Vectors mode
+// (Advanced, direction source 'vectors') sends no `tilt_azimuth` (there is no
+// single azimuth) and omits `tilt_factor` only when every vector has a custom
+// tilt (no vector then uses the global profile).
 export function buildProcessPayload(formState) {
   const payload = buildSharedPayload(formState)
   if (formState.mode === 'advanced') {
     payload.tilt_model = JSON.stringify(buildTiltModel(formState.advanced))
+    if (usingVectors(formState)) {
+      delete payload.tilt_azimuth
+      if (allCustom(normalizeVectors(formState.advanced.vectors))) delete payload.tilt_factor
+    }
   }
   return payload
 }

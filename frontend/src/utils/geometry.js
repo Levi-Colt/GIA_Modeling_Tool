@@ -1,6 +1,18 @@
 import destination from '@turf/destination'
+import bearing from '@turf/bearing'
+import distance from '@turf/distance'
 
 const EARTH_RADIUS_KM = 6371
+
+// A pointer drag shorter than this many screen pixels counts as a click when
+// adding a vector on the map.
+export const CLICK_DRAG_PX = 8
+
+// Vectors default to an arrow this fraction of the DEM's diagonal long when
+// they carry no range.
+export const DEFAULT_ARROW_FRACTION = 0.1
+// ...and this long (km) when there is no DEM extent yet either.
+export const FALLBACK_ARROW_KM = 10
 
 // Great-circle distance in km. Only used to size the azimuth line's length
 // (the raster's own diagonal), not for anything precision-sensitive -- not
@@ -13,6 +25,47 @@ export function haversineKm([lon1, lat1], [lon2, lat2]) {
     Math.sin(dLat / 2) ** 2 +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2
   return 2 * EARTH_RADIUS_KM * Math.asin(Math.sqrt(a))
+}
+
+// Initial bearing from `from` to `to` ([lon, lat] each), in degrees clockwise
+// from north, normalized to [0, 360).
+export function bearingDeg(from, to) {
+  return ((bearing(from, to) % 360) + 360) % 360
+}
+
+// Distance between two [lon, lat] points in km (turf's great-circle).
+export function distanceKm(from, to) {
+  return distance(from, to, { units: 'kilometers' })
+}
+
+// The point `km` from `from` along `azimuthDeg`, as [lon, lat].
+export function pointAlong(from, km, azimuthDeg) {
+  return destination(from, km, azimuthDeg, { units: 'kilometers' }).geometry.coordinates
+}
+
+// Geometry for one vector's arrow, all as [lon, lat]: a shaft from `base` to
+// the tip `lengthKm` along `azimuthDeg`, and a small triangular head at the tip
+// (apex, then the two barbs, which sit back along the shaft and 25 degrees to
+// either side).
+export function arrowGeometry(base, azimuthDeg, lengthKm) {
+  const tip = pointAlong(base, lengthKm, azimuthDeg)
+  const headKm = lengthKm * 0.18
+  const barb = (offset) => pointAlong(tip, headKm, azimuthDeg + 180 + offset)
+  return { shaft: [base, tip], head: [tip, barb(-25), barb(25)] }
+}
+
+// The arrow length (km) for a vector: its range when it has one, else
+// DEFAULT_ARROW_FRACTION of the DEM's diagonal, else FALLBACK_ARROW_KM.
+export function arrowLengthKm(rangeKm, extent) {
+  if (Number.isFinite(rangeKm) && rangeKm > 0) return rangeKm
+  if (!extent) return FALLBACK_ARROW_KM
+  return DEFAULT_ARROW_FRACTION * haversineKm([extent[0], extent[1]], [extent[2], extent[3]])
+}
+
+// True when a pointer went from `start` to `end` (screen px, {x, y}) by less
+// than CLICK_DRAG_PX -- a click, not a drag.
+export function isClick(start, end, thresholdPx = CLICK_DRAG_PX) {
+  return Math.hypot(end.x - start.x, end.y - start.y) < thresholdPx
 }
 
 // Clips the segment origin->end to the axis-aligned bbox [west, south, east,

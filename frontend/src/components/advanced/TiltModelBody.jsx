@@ -1,20 +1,24 @@
 import { useProcessing } from '../../context/ProcessingContext.jsx'
 import { TiltInputs } from '../steps/TiltAndProductsSteps.jsx'
 import ProfileChart from './ProfileChart.jsx'
+import VectorTable from './VectorTable.jsx'
+import VectorFitSummary from './VectorFitSummary.jsx'
+import { Help, NumberField, Segmented } from './fields.jsx'
 import {
   CURVATURE_INPUTS,
   DEFAULT_HINGE,
   DEFAULT_PROFILE,
   DEGREES,
+  DIRECTION_SOURCES,
   FAMILIES,
   HINGE_MODES,
   curvatureForm,
+  directionSourceOf,
   extraCoefficientCount,
   normalizeHingeMode,
-  parseFiniteNumber,
-  parsePositiveNumber,
   parseSecondGradient
 } from '../../utils/tiltModel.js'
+import { allCustom } from '../../utils/vectors.js'
 
 // Help text is deliberately generic: the tool is location-agnostic, so nothing
 // here may point users at a particular paper, basin, or set of values.
@@ -31,70 +35,19 @@ const POLYNOMIAL_HELP =
 const SUBSCRIPT = { 2: '₂', 3: '₃', 4: '₄', 5: '₅' }
 const SUPERSCRIPT = { 2: '²', 3: '³', 4: '⁴', 5: '⁵' }
 
-// Text input with numeric validation, not type="number", which mangles
-// exponent notation in some browsers. Placeholders are units only.
-function NumberField({ label, value, onChange, placeholder, positive = false }) {
-  const parsed = positive ? parsePositiveNumber(value) : parseFiniteNumber(value)
-  const invalid = value.trim() !== '' && parsed === null
-  return (
-    <div>
-      <label className="block text-xs text-gray-500">
-        {label}
-        <input
-          type="text"
-          inputMode="decimal"
-          placeholder={placeholder}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          aria-invalid={invalid || undefined}
-          className={`mt-1 w-full ${invalid ? 'border-red-400' : ''}`}
-        />
-      </label>
-      {invalid && <p className="text-xs text-red-600">{positive ? 'Enter a number greater than 0.' : 'Enter a number.'}</p>}
-    </div>
-  )
-}
-
-function Help({ children }) {
-  return <p className="mt-1 text-xs text-gray-500">{children}</p>
-}
-
-// Two-option segmented control (same look as the Basic/Advanced mode switch).
-function Segmented({ label, options, value, onChange }) {
-  return (
-    <div>
-      <div className="mb-1 text-xs text-gray-500">{label}</div>
-      <div role="group" aria-label={label} className="inline-flex rounded-lg bg-gray-100 p-0.5">
-        {options.map((o) => {
-          const active = o.value === value
-          return (
-            <button
-              key={o.value}
-              type="button"
-              aria-pressed={active}
-              onClick={() => onChange(o.value)}
-              className={`rounded-md px-3 py-1 text-sm ${
-                active ? 'bg-white font-medium text-gray-900 shadow-sm' : 'bg-transparent text-gray-500'
-              }`}
-            >
-              {o.label}
-            </button>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
+const GLOBAL_UNUSED_NOTE = 'Global profile not used — every vector has a custom tilt. The hinge below still applies.'
 
 // The Tilt model section body.
 //
 // EXTENSION POINT: this is the one place later specs grow the tilt model -- the
-// direction-source switch (replacing the "Single azimuth" row), vectors, and
-// shore points all mount here, reading/writing formState.advanced via
-// updateAdvanced. `tiltFactor` (top level) is the gradient at the spillway in
-// every profile family; never add a second key for it.
+// direction-source switch, the vectors table (spec 5) and, later, shore points
+// mount here, reading/writing formState.advanced via updateAdvanced.
+// `tiltFactor` (top level) is the gradient at the spillway in every profile
+// family (the global profile's, in vectors mode); never add a second key for it.
 export default function TiltModelBody() {
-  const { formState, updateAdvanced } = useProcessing()
+  const { formState, updateAdvanced, setMapEditMode } = useProcessing()
+  const source = directionSourceOf(formState.advanced)
+  const vectorsMode = source === 'vectors'
   const profile = formState.advanced.profile ?? DEFAULT_PROFILE
   const hinge = formState.advanced.hinge ?? DEFAULT_HINGE
   const { family } = profile
@@ -108,9 +61,26 @@ export default function TiltModelBody() {
   // The chart marks the second-gradient point while that form is active.
   const secondGradient = family === 'quadratic' && form === 'secondGradient' ? parseSecondGradient(profile) : null
 
+  const setSource = (directionSource) => {
+    updateAdvanced({ directionSource })
+    setMapEditMode('none') // leaving vectors mode disarms "Add on map"
+  }
+  const everyVectorCustom = vectorsMode && allCustom(formState.advanced.vectors ?? [])
+
   return (
     <div className="space-y-3">
+      <Segmented label="Direction source" options={DIRECTION_SOURCES} value={source} onChange={setSource} />
+
+      {vectorsMode ? (
+        <>
+          <VectorTable />
+          <div className="text-sm font-medium text-gray-700">Global profile (whole DEM)</div>
+          {everyVectorCustom && <p className="text-xs text-gray-500">{GLOBAL_UNUSED_NOTE}</p>}
+        </>
+      ) : null}
+
       <TiltInputs
+        showAzimuth={!vectorsMode}
         azimuthLabel="Single azimuth"
         factorLabel="Gradient at spillway (m/km)"
         factorHelp={GRADIENT_HELP}
@@ -237,7 +207,11 @@ export default function TiltModelBody() {
         />
       )}
 
-      <ProfileChart preview={formState.profilePreview} secondGradient={secondGradient} />
+      {vectorsMode ? (
+        <VectorFitSummary preview={formState.upliftPreview} />
+      ) : (
+        <ProfileChart preview={formState.profilePreview} secondGradient={secondGradient} />
+      )}
     </div>
   )
 }

@@ -13,10 +13,19 @@ frontend/
       useProfilePreview.js  debounced (400ms) POST /api/profile-preview; keeps the
                              transient formState.profilePreview current. Mounted
                              once in ProcessingPage (not in the tilt section), so
-                             it works while that section is collapsed
+                             it works while that section is collapsed. Azimuth
+                             source only
+      useUpliftPreview.js   the vectors source's counterpart: debounced (500ms)
+                             POST /api/uplift-preview -> transient
+                             formState.upliftPreview (isobases + per-vector fit);
+                             needs a ready tilt section, the resolved origin and
+                             the DEM bounds; cleared when not in vectors mode
     context/             ProcessingContext: shared form state + `mode` + the
                           `advanced` namespace (`updateForm`, `updateAdvanced`),
-                          carry-forward to localStorage (not presets — separate concern)
+                          carry-forward to localStorage (not presets — separate concern).
+                          Also the vector-list actions (`setVectors`, `undoVectors`,
+                          `selectVector`, `setMapEditMode`, `requestVectorFocus`)
+                          and the undo stack (last 20 list states, in a ref)
     utils/
       basemap.js          BASEMAPS (absolute external tile URLs, by design),
                            pickBasemapKey(extent) — pure US/non-US test using
@@ -33,8 +42,19 @@ frontend/
                            tiltModelIssues (readiness reasons), describeTiltModel
                            (results-screen line), DEFAULT_PROFILE / DEFAULT_HINGE
       ticks.js            niceTicks(min, max, count) for the profile chart axes
-      geometry.js         client-side azimuth-line math (turf + a hand-rolled
-                           haversine/bbox-clip) — no backend call
+      geometry.js         client-side geometry, no backend call: the azimuth line
+                           (turf + a hand-rolled haversine/bbox-clip), and the
+                           vector helpers bearingDeg / distanceKm / pointAlong /
+                           arrowGeometry / arrowLengthKm / isClick (a drag under
+                           8 px is a click)
+      numbers.js          the strict numeric parsers (parseFiniteNumber, ...),
+                           shared by tiltModel.js and vectors.js (re-exported
+                           from tiltModel.js)
+      vectors.js          the vectors row model and everything pure about it:
+                           readiness (vectorIssues), the payload
+                           (buildVectorsDirection), CSV import (papaparse),
+                           the map adapter (vectorsToMapData), map-edit
+                           formatting (fieldsFromGeometry), the undo stack
     components/
       shared/
         AppLayout.jsx      page layout for form + results views: header, form
@@ -52,16 +72,31 @@ frontend/
                             TargetElevationField, TiltInputs, ProductsStep
       advanced/
         TiltModelBody.jsx  the Advanced Tilt-model section body (the extension
-                            point): shared azimuth + gradient inputs, profile
+                            point): direction-source switch (Single azimuth |
+                            Vectors), shared azimuth + gradient inputs, profile
                             family, family parameters, hinge rule, chart
         ProfileChart.jsx   hand-rolled SVG uplift-vs-distance preview + warnings
+        VectorTable.jsx    the vectors table (#, Lat, Lon, Azim, Range, Tilt, Fit,
+                            remove), custom-tilt rows, + Add row / Add on map /
+                            Undo / Import CSV
+        CsvImport.jsx      the CSV import panel (Replace / Append buttons)
+        VectorFitSummary.jsx  vectors mode's replacement for the profile chart:
+                            fit summary line, guard note, preview warnings
+        fields.jsx         NumberField / Help / Segmented, shared by the above
       map/
         MapPanel.jsx       pipeline-agnostic — see "map component contract" in
                            GIA_Tool_Penpot_Spec.md / VISUALIZATION_PIPELINE_SPEC.md.
                            Vanilla Leaflet (no react-leaflet) wired via
                            useRef/useEffect; renders whatever subset of
                            extent/rasterPreview/origin/azimuthLine/contour/
-                           tiltedRasterPreview/selectionRadius it's handed.
+                           tiltedRasterPreview/selectionRadius/vectors/isobases
+                           it's handed, and reports vector edits through an
+                           optional `editing` prop's callbacks. One effect and
+                           one pane per layer group, so editing vectors never
+                           rebuilds the raster.
+        VectorLayer.js     the vector arrows + editing gestures (add on map, base
+                           and tip handles), imperative Leaflet owned by
+                           MapPanel; no model logic
         CompassRose.jsx    fixed chrome overlay, rotates with tiltAzimuth
 ```
 
@@ -102,8 +137,35 @@ frontend/
   mode has no `'default'` value, and legacy `'default'` / `'natural'` load as
   `'origin'`); the `/api/profile-preview` response lives in the transient
   top-level `profilePreview` key. Advanced runs send a `tilt_model` JSON form field (see
-  `utils/payload.js`); Basic never does. The direction-source switch, vectors
-  and shore points (specs 5/6) mount in `TiltModelBody` too.
+  `utils/payload.js`); Basic never does. Shore points (spec 6) mount in
+  `TiltModelBody` too.
+- Vector direction fields (`VECTOR_FIELD_SPEC.md`, spec 5) are implemented in
+  Advanced mode. `TiltModelBody` starts with a **Direction source** switch,
+  Single azimuth | Vectors. In vectors mode it shows the vectors table above a
+  "Global profile (whole DEM)" block (the same gradient / family / hinge controls;
+  a muted note says the profile is unused when every vector is custom), and the
+  profile chart is replaced by the fit summary (the isobases are on the map).
+  Each row has lat, lon, azimuth, an optional **range** (its range of influence,
+  not a magnitude) and a Global/Custom tilt; a custom row expands below with a
+  family (Linear/Quadratic), a **local gradient** (at that vector's own
+  location) and, for a quadratic, the same "Curvature from" control as the
+  global profile. The Fit column comes from `/api/uplift-preview` and is amber
+  above 15 degrees. Rows can be added with **+ Add row**, by **Add on map**
+  (drag = direction and range, a short drag is a click and focuses the new
+  row's azimuth input; Escape or Done stops; add mode disables map panning),
+  by **Import CSV** (header aliases matched case-insensitively; bad rows are
+  skipped whole and reported; Replace / Append buttons), and edited by dragging
+  each arrow's base handle (moves) or tip handle (rotates and resizes; sets the
+  azimuth and range). Map edits commit on drag end only; Undo keeps the last 20
+  list states (structural edits, not typing).
+  State: `advanced.directionSource` (`'azimuth' | 'vectors'`) and
+  `advanced.vectors` (persisted; every field a string, stable `id`s); the
+  selection (`selectedVectorId`), add-on-map mode (`mapEditMode`), a pending
+  focus request (`vectorFocusRequest`) and the preview (`upliftPreview`) are
+  transient top-level keys in `TRANSIENT_KEYS`. In vectors mode the payload omits
+  `tilt_azimuth`, and omits `tilt_factor` (and the unused global profile) only
+  when every vector is custom; the single-azimuth line and compass needle are
+  not drawn.
 - Presets and the reprojection modal aren't scaffolded yet.
 - Vitest + `@testing-library/react` are configured (`npm test`, config lives
   in `vite.config.js`'s `test` key, setup file at `src/test/setup.js`). Still

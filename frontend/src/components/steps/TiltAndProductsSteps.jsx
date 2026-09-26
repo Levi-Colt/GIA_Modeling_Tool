@@ -73,22 +73,30 @@ function TargetElevationInput() {
 // Azimuth and tilt-factor inputs, shared by both modes. In Advanced these are
 // labelled "Single azimuth" / "Gradient at spillway (m/km)" -- the same two
 // top-level formState keys either way, so a value typed in one mode shows up
-// in the other.
-export function TiltInputs({ azimuthLabel = 'Azimuth (deg)', factorLabel = 'Tilt (m/km)', factorHelp = null }) {
+// in the other. `showAzimuth={false}` (Advanced, vectors direction source) shows
+// only the gradient: there is no single azimuth then, but the value is kept.
+export function TiltInputs({
+  azimuthLabel = 'Azimuth (deg)',
+  factorLabel = 'Tilt (m/km)',
+  factorHelp = null,
+  showAzimuth = true
+}) {
   const { formState, updateForm } = useProcessing()
   return (
     <div>
-      <div className="grid grid-cols-2 gap-2">
-        <label className="block text-xs text-gray-500">
-          {azimuthLabel}
-          <input
-            type="number"
-            placeholder="Azimuth (deg)"
-            value={formState.tiltAzimuth}
-            onChange={(e) => updateForm({ tiltAzimuth: e.target.value })}
-            className="mt-1 w-full"
-          />
-        </label>
+      <div className={showAzimuth ? 'grid grid-cols-2 gap-2' : undefined}>
+        {showAzimuth && (
+          <label className="block text-xs text-gray-500">
+            {azimuthLabel}
+            <input
+              type="number"
+              placeholder="Azimuth (deg)"
+              value={formState.tiltAzimuth}
+              onChange={(e) => updateForm({ tiltAzimuth: e.target.value })}
+              className="mt-1 w-full"
+            />
+          </label>
+        )}
         <label className="block text-xs text-gray-500">
           {factorLabel}
           <input

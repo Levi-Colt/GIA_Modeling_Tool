@@ -1,6 +1,6 @@
 import Banner from '../shared/Banner.jsx'
 import { parseSelectionRadiusKm } from '../../utils/readiness.js'
-import { describeTiltModel } from '../../utils/tiltModel.js'
+import { describeTiltModel, usingVectors } from '../../utils/tiltModel.js'
 
 function triggerDownload(blob, filename) {
   const url = URL.createObjectURL(blob)
@@ -50,15 +50,19 @@ export default function ResultsSuccess({ result, formState, onRunAgain, onAdjust
       </div>
 
       <p className="text-xs text-gray-500">
-        Azimuth {formState.tiltAzimuth}&deg; &middot; Tilt {formState.tiltFactor} m/km &middot; Target
-        elevation {formState.targetElevation} m
+        {usingVectors(formState) ? (
+          <>Vector directions</>
+        ) : (
+          <>Azimuth {formState.tiltAzimuth}&deg; &middot; Tilt {formState.tiltFactor} m/km</>
+        )}{' '}
+        &middot; Target elevation {formState.targetElevation} m
         {parseSelectionRadiusKm(formState.selectionRadiusKm) !== null &&
           <> &middot; Radius {formState.selectionRadiusKm} km</>}
         {formState.mode === 'advanced' && (
           <> &middot; {describeTiltModel(
               formState.advanced,
-              formState.profilePreview?.data?.hinge_km,
-              formState.profilePreview?.data?.hinge_source
+              (usingVectors(formState) ? formState.upliftPreview : formState.profilePreview)?.data?.hinge_km,
+              (usingVectors(formState) ? formState.upliftPreview : formState.profilePreview)?.data?.hinge_source
             )}</>
         )}
       </p>

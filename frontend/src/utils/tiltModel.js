@@ -7,6 +7,21 @@
 // The tool is location-agnostic: nothing here (defaults, help text, labels,
 // messages) may be tuned to, or point users toward, a particular paper or set of
 // basins. Profile defaults are empty fields and the 'origin' hinge.
+//
+// Spec 5 adds a second direction source, 'vectors' (utils/vectors.js): the
+// dispatchers below (tiltModelIssues, buildTiltModel, describeTiltModel) branch
+// on advanced.directionSource.
+import { anyGlobal, buildVectorsDirection, isCustom, normalizeVectors, vectorIssues } from './vectors.js'
+import { curvatureForm, parseFiniteNumber, parsePositiveNumber, parseSecondGradient } from './numbers.js'
+
+// Re-exported so existing importers keep working.
+export { curvatureForm, parseFiniteNumber, parsePositiveNumber, parseSecondGradient }
+
+export const DIRECTION_SOURCES = [
+  { value: 'azimuth', label: 'Single azimuth' },
+  { value: 'vectors', label: 'Vectors' }
+]
+export const DEFAULT_DIRECTION_SOURCE = 'azimuth'
 
 export const FAMILIES = [
   { value: 'linear', label: 'Linear' },
@@ -50,31 +65,22 @@ function parts(advanced) {
   return { profile: advanced?.profile ?? DEFAULT_PROFILE, hinge: advanced?.hinge ?? DEFAULT_HINGE }
 }
 
+export function directionSourceOf(advanced) {
+  return advanced?.directionSource === 'vectors' ? 'vectors' : DEFAULT_DIRECTION_SOURCE
+}
+
+// True when the run is Advanced with the vectors direction source. Basic ignores
+// every advanced field, so it is never "using vectors".
+export function usingVectors(formState) {
+  return formState.mode === 'advanced' && directionSourceOf(formState.advanced) === 'vectors'
+}
+
+const vectorsOf = (advanced) => normalizeVectors(advanced?.vectors ?? [])
+
 // Any stored hinge mode this version doesn't know (an older save's 'default' or
 // 'natural', which spec 4a removed) is the default, 'origin'.
 export function normalizeHingeMode(mode) {
   return mode === 'distance' || mode === 'none' ? mode : 'origin'
-}
-
-const NUMBER_PATTERN = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/
-
-// Strict numeric parse for the text inputs (exponent notation must work, which
-// type="number" mangles in some browsers). Returns a finite number, or null for
-// anything else: '' (Number('') is 0, which would silently pass), whitespace,
-// 'abc', hex, 'Infinity', '1,5'.
-export function parseFiniteNumber(text) {
-  if (typeof text === 'number') return Number.isFinite(text) ? text : null
-  if (typeof text !== 'string') return null
-  const trimmed = text.trim()
-  if (!NUMBER_PATTERN.test(trimmed)) return null
-  const n = Number(trimmed)
-  return Number.isFinite(n) ? n : null
-}
-
-// A finite number > 0, or null.
-export function parsePositiveNumber(text) {
-  const n = parseFiniteNumber(text)
-  return n !== null && n > 0 ? n : null
 }
 
 // Number of c2..cN inputs the polynomial family shows / sends.
@@ -83,24 +89,9 @@ export function extraCoefficientCount(profile) {
   return Math.min(Math.max(Number.isInteger(degree) ? degree : 3, 2), MAX_DEGREE) - 1
 }
 
-// Which curvature form a quadratic is using ('secondGradient' unless 'rate').
-export function curvatureForm(profile) {
-  return profile.curvatureInput === 'rate' ? 'rate' : 'secondGradient'
-}
-
-// The active second-gradient inputs as numbers, or null unless both are valid.
-export function parseSecondGradient(profile) {
-  const gradient = parseFiniteNumber(profile.secondGradient)
-  const distanceKm = parsePositiveNumber(profile.secondGradientDistanceKm)
-  return gradient !== null && distanceKm !== null ? { gradient, distanceKm } : null
-}
-
-// Reasons the tilt section isn't runnable, as plain strings (readiness.js keys
-// them to the 'tilt' section). Only relevant in Advanced mode; only the active
-// curvature form's fields are required.
-export function tiltModelIssues(advanced) {
+// Only the active curvature form's fields are required.
+function profileIssues(profile) {
   const issues = []
-  const { profile, hinge } = parts(advanced)
   if (profile.family === 'quadratic') {
     if (curvatureForm(profile) === 'rate') {
       if (parseFiniteNumber(profile.rateOfIncrease) === null) issues.push('a rate of increase (a number)')
@@ -116,37 +107,68 @@ export function tiltModelIssues(advanced) {
     const ok = profile.coefficients.slice(0, count).every((c) => parseFiniteNumber(c) !== null)
     if (!ok) issues.push(`polynomial coefficients c₂–c${count + 1} (numbers)`)
   }
-  if (normalizeHingeMode(hinge.mode) === 'distance' && parsePositiveNumber(hinge.distanceKm) === null) {
-    issues.push('a hinge distance greater than 0')
-  }
   return issues
 }
 
-// The API's `tilt_model` object. Only meaningful once tiltModelIssues is empty.
-// A quadratic sends only its active curvature form.
-export function buildTiltModel(advanced) {
+function hingeIssues(hinge) {
+  return normalizeHingeMode(hinge.mode) === 'distance' && parsePositiveNumber(hinge.distanceKm) === null
+    ? ['a hinge distance greater than 0']
+    : []
+}
+
+// Reasons the tilt section isn't runnable, as plain strings (readiness.js keys
+// them to the 'tilt' section). Only relevant in Advanced mode. In vectors mode the
+// global profile's fields count only while some vector uses the global profile;
+// the hinge always applies.
+export function tiltModelIssues(advanced) {
   const { profile, hinge } = parts(advanced)
-  const mode = normalizeHingeMode(hinge.mode)
+  if (directionSourceOf(advanced) === 'vectors') {
+    const vectors = vectorsOf(advanced)
+    return [
+      ...vectorIssues(vectors),
+      ...(anyGlobal(vectors) ? profileIssues(profile) : []),
+      ...hingeIssues(hinge)
+    ]
+  }
+  return [...profileIssues(profile), ...hingeIssues(hinge)]
+}
+
+function buildProfile(profile) {
   const second = parseSecondGradient(profile)
   const useRate = curvatureForm(profile) === 'rate'
   return {
-    version: 1,
-    direction: { type: 'azimuth' },
-    profile: {
-      family: profile.family,
-      rate_of_increase:
-        profile.family === 'quadratic' && useRate ? parseFiniteNumber(profile.rateOfIncrease) : null,
-      second_gradient:
-        profile.family === 'quadratic' && !useRate
-          ? { gradient_m_per_km: parseFiniteNumber(profile.secondGradient), distance_km: second?.distanceKm ?? null }
-          : null,
-      coefficients:
-        profile.family === 'polynomial'
-          ? profile.coefficients.slice(0, extraCoefficientCount(profile)).map(parseFiniteNumber)
-          : null
-    },
-    hinge: { mode, distance_km: mode === 'distance' ? parsePositiveNumber(hinge.distanceKm) : null }
+    family: profile.family,
+    rate_of_increase:
+      profile.family === 'quadratic' && useRate ? parseFiniteNumber(profile.rateOfIncrease) : null,
+    second_gradient:
+      profile.family === 'quadratic' && !useRate
+        ? { gradient_m_per_km: parseFiniteNumber(profile.secondGradient), distance_km: second?.distanceKm ?? null }
+        : null,
+    coefficients:
+      profile.family === 'polynomial'
+        ? profile.coefficients.slice(0, extraCoefficientCount(profile)).map(parseFiniteNumber)
+        : null
   }
+}
+
+// The API's `tilt_model` object. Only meaningful once tiltModelIssues is empty.
+// A quadratic sends only its active curvature form. In vectors mode the global
+// profile is omitted when every vector is custom (it is unused, and there is no
+// gradient at the spillway to build it from).
+export function buildTiltModel(advanced) {
+  const { profile, hinge } = parts(advanced)
+  const mode = normalizeHingeMode(hinge.mode)
+  const hingeOut = { mode, distance_km: mode === 'distance' ? parsePositiveNumber(hinge.distanceKm) : null }
+  if (directionSourceOf(advanced) === 'vectors') {
+    const vectors = vectorsOf(advanced)
+    return {
+      version: 1,
+      direction: buildVectorsDirection(vectors),
+      ...(anyGlobal(vectors) ? { profile: buildProfile(profile) } : {}),
+      hinge: hingeOut
+    }
+  }
+  return { version: 1, direction: { type: 'azimuth' }, profile: buildProfile(profile), hinge: hingeOut }
 }
 
 // "-54" style number for display (U+2212 minus, up to `digits` significant
@@ -181,6 +203,13 @@ export function describeTiltModel(advanced, hingeKm, hingeSource) {
         : `, second gradient ${profile.secondGradient.trim()} m/km at ${profile.secondGradientDistanceKm.trim()} km`
   }
   if (profile.family === 'polynomial') head += `, degree ${extraCoefficientCount(profile) + 1}`
+
+  if (directionSourceOf(advanced) === 'vectors') {
+    const vectors = vectorsOf(advanced)
+    const custom = vectors.filter(isCustom).length
+    const count = `${vectors.length} ${vectors.length === 1 ? 'vector' : 'vectors'}`
+    head = `${count}${custom ? ` (${custom} custom)` : ''}${anyGlobal(vectors) ? `, global ${head.toLowerCase()}` : ''}`
+  }
 
   const mode = normalizeHingeMode(hinge.mode)
   let hingeText = { origin: 'at spillway', none: 'none' }[mode] ?? `${hinge.distanceKm.trim()} km behind spillway`

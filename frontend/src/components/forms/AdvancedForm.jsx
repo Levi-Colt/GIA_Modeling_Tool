@@ -6,6 +6,8 @@ import { CoordinateModeStep, CoordinatesStep } from '../steps/CoordinateSteps.js
 import { TargetElevationField, ProductsStep } from '../steps/TiltAndProductsSteps.jsx'
 import TiltModelBody from '../advanced/TiltModelBody.jsx'
 import { getReadiness, parseSelectionRadiusKm } from '../../utils/readiness.js'
+import { usingVectors } from '../../utils/tiltModel.js'
+import { anyGlobal, isCustom, normalizeVectors } from '../../utils/vectors.js'
 import { STEPS, scrollToStep } from '../../utils/steps.js'
 
 // "028°" -- azimuth zero-padded to three integer digits, like a compass bearing.
@@ -53,9 +55,26 @@ export default function AdvancedForm({ focusRequest }) {
     requestAnimationFrame(() => scrollToStep(id))
   })
 
+  // A click-added vector asks the table to focus its azimuth input; the table
+  // only exists while the Tilt model section is open, so open it first.
+  const focusVectorId = formState.vectorFocusRequest?.id
+  useEffect(() => {
+    if (focusVectorId && !sectionsOpen.tilt) setOpen('tilt', true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formState.vectorFocusRequest])
+
   const { preflightStatus, resolvedOrigin, tiltAzimuth, tiltFactor, selectionRadiusKm, includeDem } = formState
   const family = formState.advanced.profile?.family ?? 'linear'
   const radiusKm = parseSelectionRadiusKm(selectionRadiusKm)
+  let tiltSummary = `${formatAzimuth(tiltAzimuth)} · ${tiltFactor} m/km${family === 'linear' ? '' : ` · ${family}`}`
+  if (usingVectors(formState)) {
+    const vectors = normalizeVectors(formState.advanced.vectors)
+    const custom = vectors.filter(isCustom).length
+    tiltSummary =
+      `${vectors.length} ${vectors.length === 1 ? 'vector' : 'vectors'}` +
+      `${custom ? ` (${custom} custom)` : ''}` +
+      `${anyGlobal(vectors) ? ` · ${tiltFactor} m/km global${family === 'linear' ? '' : ` · ${family}`}` : ''}`
+  }
 
   const originNeeds = needs('origin')
   const originSummary = resolvedOrigin
@@ -90,7 +109,7 @@ export default function AdvancedForm({ focusRequest }) {
       title: 'Tilt model',
       status: {
         complete: needs('tilt').length === 0,
-        summary: `${formatAzimuth(tiltAzimuth)} · ${tiltFactor} m/km${family === 'linear' ? '' : ` · ${family}`}`,
+        summary: tiltSummary,
         mono: true,
         needs: needs('tilt')
       },

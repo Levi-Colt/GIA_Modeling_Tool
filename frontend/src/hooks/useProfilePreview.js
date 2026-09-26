@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useProcessing } from '../context/ProcessingContext.jsx'
 import { profilePreview } from '../api/client.js'
 import { getReadiness } from '../utils/readiness.js'
-import { buildTiltModel } from '../utils/tiltModel.js'
+import { buildTiltModel, directionSourceOf } from '../utils/tiltModel.js'
 
 export const PREVIEW_DEBOUNCE_MS = 400
 
@@ -21,8 +21,11 @@ export function useProfilePreview() {
   const requestId = useRef(0)
   const lastData = useRef(null)
 
+  // The single-azimuth curve only: the vectors source has its own preview
+  // (useUpliftPreview).
   const tiltReady =
     formState.mode === 'advanced' &&
+    directionSourceOf(formState.advanced) === 'azimuth' &&
     getReadiness(formState).missing.every((m) => m.section !== 'tilt') &&
     Number.isFinite(Number(formState.tiltAzimuth)) &&
     Number.isFinite(Number(formState.tiltFactor))

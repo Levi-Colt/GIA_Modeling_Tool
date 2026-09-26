@@ -13,7 +13,8 @@
   the repo root is on `sys.path` (see `api/main.py`'s `sys.path.insert`).
 - `api/`: FastAPI layer wrapping the backend. Routes: `POST /api/process`,
   `POST /api/preflight`, `POST /api/resolve-point`, `POST /api/raster-preview`,
-  `POST /api/origin-elevation`, `POST /api/profile-preview`, `GET /api/health`.
+  `POST /api/origin-elevation`, `POST /api/profile-preview`,
+  `POST /api/uplift-preview`, `GET /api/health`.
   See `documentation/api-README.md` for the full request/response contract.
 - `frontend/`: React (JS, not TS) + Vite + Tailwind + Leaflet (map panel).
   See `documentation/frontend-README.md` for structure and what's
@@ -168,6 +169,88 @@
   second-gradient point (interpolated from the returned samples) while that form
   is active. Spec 5's per-vector custom quadratic must accept the same two
   curvature forms (second gradient relative to the vector's own location).
+- **Vector direction fields** (`backend/direction_field.py`,
+  `documentation/VECTOR_FIELD_SPEC.md`, spec 5; backend, API and frontend are
+  all done — the frontend half is described in the next entry). A
+  second `tilt_model.direction.type`, `vectors`: each vector is a location, an
+  azimuth (direction of maximum uplift) and an optional **range**. **Range is the
+  vector's range of influence (how far its direction is trusted), never a
+  magnitude**; magnitude comes from the global profile (`tilt_factor`, profile,
+  hinge) or a per-vector **custom tilt** (linear or quadratic only), whose
+  **gradient is local — the gradient at that vector's own location** (a custom
+  quadratic's second gradient is relative to the vector, `k = (gradient −
+  local_gradient)/distance_km`; same two curvature forms as the global profile).
+  The method, all in `_local_en_km`'s frame (never a second projection): a working
+  grid (≤256 cells on the long side, DEM bounds + 5%); unit directions
+  (`Geod.fwd` 1 km mapped into the frame) blended with weights
+  `max(exp(−(r/R)²), 1e-6) / (r² + h²)` (default R = median nearest-neighbour
+  distance, or 0.5 × frame diagonal for one vector/coincident vectors);
+  near-opposite nodes (`|V|/Σw < 0.05`) fall back to the nearest vector and warn
+  above 1%; **pass 1** solves least squares for a curved distance coordinate φ
+  (`∇φ ≈ v̂`, normal equations factored once with `splu`, anchored φ(origin)=0);
+  **Case A** (every vector uses the global profile): `U = profile.U(max(φ, d_h))`;
+  **Case B** (any custom tilt): blend per-vector gradients `G_i(φ)` with the same
+  weights, apply the hinge in gradient form, then **pass 2** integrates `∇U ≈ G·v̂`
+  with the same solver. The model is a `GridUpliftModel` (bilinear sample via
+  `scipy.ndimage.map_coordinates`, positions outside the grid clamp). **Deviation
+  from the spec, approved:** in Case A the grid holds φ and the profile is applied
+  per pixel after sampling (not U sampled from a grid) — exact for a uniform field
+  (single-vector regression is ~1e-13 vs a `PlanarUpliftModel` at the azimuth the
+  mapped direction implies) and it keeps the hinge kink sharp; Case B samples U.
+  **Second approved deviation:** the model is built in `api/main.py`, right after
+  reprojection, from the working raster's transform/shape (it needs the raster
+  geometry, and `process_dem` already takes `uplift_model=`), so `backend/app.py`
+  is unchanged. **Third:** in `vectors` mode with every vector custom the global
+  `profile` is optional/ignored (no `tilt_factor` to build c₁ from); the hinge
+  still applies (resolved from its mode alone). Diagnostics (per-vector direction
+  misfit — angle between ∇φ and v̂ at the vector, `null` outside the grid — RMS,
+  max, worst vector, degenerate fraction) come back in `X-Tilt-Model-Diagnostics`,
+  `run_parameters.json` `diagnostics`, and `POST /api/uplift-preview` (isobases as
+  GeoJSON at 1/2/5×10ⁿ levels, ≤12; the spillway's isobase is contoured from φ,
+  not U). Warnings (not errors): near-opposite directions, worst misfit > 15°, a
+  vector more than half the DEM diagonal outside its bounds. **Known LS
+  behaviour:** two custom gradients at one azimuth aren't curl-free, so Case B's
+  `U = 0` contour tilts slightly off φ = 0 and U drifts a little behind the
+  spillway — inherent to the spec's least-squares integration, not a bug.
+  `tilt_azimuth` / `tilt_factor` are optional form fields with condition-specific
+  422 messages (`api/tilt_model.py::require_direction_inputs`; for a basic run,
+  both stay required); `/api/profile-preview` (azimuth) and `/api/uplift-preview`
+  (vectors) each 422 and point at the other. **Preview vs run (E6):** the preview
+  grid comes from preflight `bounds_wgs84` through the same code as a run's, which
+  uses the real raster's transform — identical for an EPSG:4326 DEM, negligibly
+  different for a reprojected one; if they ever diverge, trust the run.
+- **Vector direction fields — frontend** (spec 5). `TiltModelBody` (still the
+  one tilt-model extension point) starts with a Direction-source switch, `Single
+  azimuth | Vectors`; spec 6 adds Shore points there. State: `advanced.
+  directionSource` and `advanced.vectors` (persisted; every field a string, rows
+  have stable `id`s — `utils/vectors.js` owns the row model, readiness
+  (`vectorIssues`), the payload (`buildVectorsDirection`), CSV import (papaparse;
+  aliases matched case-insensitively; invalid rows skipped whole and reported;
+  Replace/Append buttons) and the undo stack). **Selection, add-on-map mode, the
+  focus request and `upliftPreview` are transient top-level keys** (in
+  `TRANSIENT_KEYS`), not in `advanced` — deviating from the spec's sketch, because
+  `TRANSIENT_KEYS` only excludes top-level keys. `usingVectors(formState)`
+  (`utils/tiltModel.js`) = Advanced + vectors source; Basic never is. In vectors
+  mode: no `tiltAzimuth` requirement/payload field, `tiltFactor` required (and sent)
+  only while some vector is global, the global profile's fields count only while
+  some vector is global (the hinge always does), and the profile is omitted from
+  `tilt_model` when every vector is custom. `useUpliftPreview` (debounced 500 ms;
+  needs a ready tilt section + resolved origin + DEM bounds) keeps
+  `formState.upliftPreview` current; `useProfilePreview` is azimuth-only. Table:
+  #, Lat, Lon, Azim °, Range km, Tilt, Fit ° (amber above 15°), remove;
+  custom rows expand below (family, **local** gradient, and for a quadratic the
+  same Curvature-from control as the global profile, second gradient relative to
+  the vector). **`MapPanel`'s editing contract** (`editing` prop: `mode`,
+  `onAddVector`, `onUpdateVector`, `onSelectVector`, `onExitAddMode`; `mapData`
+  gains `vectors` and `isobases`) — **still no geoprocessing**: it renders what it
+  is given and reports geometry edits, once, on drag end; bearing/distance/arrow
+  math is `utils/geometry.js` (turf); the gestures are `components/map/
+  VectorLayer.js`. `MapPanel` now has one pane and one effect per layer group (so
+  editing vectors doesn't rebuild the raster) and refits only when the contour,
+  raster base or extent changes; `App.jsx` memoizes each `mapData` field for that.
+  Layer order: raster → selection radius → isobases → contour → vectors → azimuth
+  line (azimuth source only) → origin. Range is influence, not magnitude, and
+  custom gradients are local — in every label and help text.
 - Temp storage is job-scoped, under a configurable GIA_STORAGE_DIR env var
   (defaults to OS temp dir) — environment-agnostic re: eventual CryoCloud hosting.
 - File input is dual: drag-and-drop upload and a typed server-side path are
@@ -273,6 +356,14 @@
   modes.
 
 ## Open items
+- **The production build renders a blank page in Chrome** (found while browser-
+  testing spec 5, present at the spec-4 commit too, so not caused by it): the
+  bundle throws `x.defs is not a function` at load — the `proj4.defs(...)` call in
+  `proj4-fully-loaded` (a dependency of `georaster-layer-for-leaflet`) gets a
+  non-function from its `proj4` import under Vite 5.4.21's production build (proj4
+  2.21.0). `npm run dev` works.
+  Unfixed; the FastAPI-serves-`frontend/dist` path needs it fixed before
+  CryoCloud use.
 - Sync vs. async processing for very large DEMs — currently synchronous
   (threadpool-backed), not yet needing a job-queue/polling pattern. The
   frontend's loading state is deliberately indeterminate to match this.

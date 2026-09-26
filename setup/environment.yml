@@ -10,6 +10,7 @@ dependencies:
       - rasterio
       - shapely
       - scikit-image
+      - scipy
       - geopandas
       - psutil
       - pyproj

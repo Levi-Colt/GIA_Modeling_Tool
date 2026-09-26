@@ -8,7 +8,7 @@ plus the small preview artifacts the frontend's map panel renders (see
 
 Routes are namespaced under `/api` (`/api/process`, `/api/preflight`,
 `/api/resolve-point`, `/api/raster-preview`, `/api/origin-elevation`,
-`/api/profile-preview`, `/api/health`) so the frontend's relative `api/...` fetches (required for
+`/api/profile-preview`, `/api/uplift-preview`, `/api/health`) so the frontend's relative `api/...` fetches (required for
 `jupyter-server-proxy` compatibility, see `CLAUDE.md`) resolve correctly with
 no path rewriting needed in either the Vite dev proxy or production.
 
@@ -198,12 +198,12 @@ Interactive docs (request/response schema, try-it-out) are served at `/docs`.
 | `origin_mode` | string | yes | one of `"match_raster"`, `"decimal_degrees"`, `"epsg"` |
 | `origin_value` | string | yes | format depends on `origin_mode` -- see below |
 | `origin_epsg` | string | only if `origin_mode == "epsg"` | e.g. `"EPSG:32612"` |
-| `tilt_azimuth` | float | yes | tilt direction, degrees |
-| `tilt_factor` | float | yes | meters of elevation change per km |
+| `tilt_azimuth` | float | yes, unless `tilt_model.direction.type` is `"vectors"` | tilt direction, degrees |
+| `tilt_factor` | float | yes, unless `direction.type` is `"vectors"` and every vector has a custom tilt | meters of elevation change per km, at the spillway -- see "Relaxed fields" below |
 | `target_elevation` | float | yes | paleo-elevation to contour, meters -- may be overridden server-side, see "Target elevation resolution" below |
 | `include_dem` | bool | no (default `true`) | also embed the tilted DEM as a raster layer |
 | `selection_radius_km` | float | no | keep only strandline contours that come within this many km of the resolved origin -- see "Selection radius" below |
-| `tilt_model` | string (JSON) | no | uplift model: profile family + hinge rule -- see "Tilt model" below. Absent means the basic linear tilt (byte-identical to a run before this field existed). `tilt_azimuth` / `tilt_factor` stay required; `tilt_factor` is always the model's gradient at the origin (c1) |
+| `tilt_model` | string (JSON) | no | uplift model: profile family + hinge rule -- see "Tilt model" below. Absent means the basic linear tilt (byte-identical to a run before this field existed), which requires `tilt_azimuth` and `tilt_factor`; `tilt_factor` is always the global profile's gradient at the origin (c1) |
 
 ## Tilt model
 
@@ -277,7 +277,7 @@ rejected, so a typo never silently becomes a default):
 | malformed JSON | `tilt_model must be valid JSON: ...` |
 | not an object | `tilt_model must be a JSON object.` |
 | `version` not `1` | `tilt_model.version must be 1.` |
-| `direction.type` not `"azimuth"` | `tilt_model.direction.type must be one of ['azimuth'].` |
+| unknown `direction.type` | `tilt_model.direction.type must be one of ['azimuth', 'vectors'].` |
 | unknown key | `tilt_model has an unknown key: '<path>'.` |
 | missing required object/field | `tilt_model.<path> is required.` |
 | unknown family | `tilt_model.profile.family must be one of ['linear', 'quadratic', 'polynomial'].` |
@@ -295,9 +295,117 @@ rejected, so a typo never silently becomes a default):
 | `distance` without `distance_km > 0` | `A 'distance' hinge requires distance_km > 0 and finite.` |
 | `distance_km` on another mode | `A '<mode>' hinge does not take distance_km.` |
 | non-finite `tilt_azimuth` / `tilt_factor` alongside `tilt_model` | `tilt_azimuth and tilt_factor must be finite numbers.` |
+| `vectors` rules | see "Vector direction field" below |
 
-The model is parsed and built before the upload is written to disk, so a bad
-model fails fast.
+An `azimuth` (or absent) model is parsed and built before the upload is written
+to disk, so a bad model fails fast. A `vectors` model is *validated* at the same
+point but *built* once the working raster exists (it needs the raster's
+geometry), still before any tilt work.
+
+## Vector direction field (`direction.type == "vectors"`)
+
+Multi-directional tilt for shorelines with too little data to fit a surface. The
+user supplies vectors -- a location, an azimuth (the direction of maximum uplift
+there) and an optional **range** -- and the tool builds a smooth uplift surface
+whose isobases bend to follow them. **Range is the vector's range of influence
+(how far its direction is trusted), never a magnitude.** Magnitude comes from the
+global profile (`tilt_factor`, `profile`, `hinge`), or per vector from a custom
+tilt.
+
+```json
+"direction": {
+  "type": "vectors",
+  "vectors": [
+    { "lat": 49.9, "lon": -97.2, "azimuth_deg": 28, "range_km": 150, "custom": null },
+    { "lat": 52.8, "lon": -99.1, "azimuth_deg": 33, "range_km": null,
+      "custom": { "family": "quadratic", "local_gradient": 0.6,
+                  "second_gradient": { "gradient_m_per_km": 1.0, "distance_km": 120 } } }
+  ]
+}
+```
+
+**Custom tilts** (`custom`, per vector; `null` = use the global profile). Only
+`linear` and `quadratic` (polynomials are global-only). `local_gradient` is the
+gradient **at that vector's own location** (custom gradients are *local*). A
+`quadratic` takes exactly one of `rate_of_increase` *k* or `second_gradient`, the
+latter *relative to the vector's own location*: `k = (gradient_m_per_km -
+local_gradient) / distance_km`, `distance_km` measured up the uplift direction
+from the vector. As for the global profile, the backend is canonical in *k*;
+`run_parameters.json` records the form supplied and the derived
+`rate_of_increase`.
+
+**The method** (all in the same local frame as the tilt, `_local_en_km`; see
+`backend/direction_field.py`): a working grid (at most 256 cells on the long side,
+DEM bounds plus 5% padding) blends the vectors' unit directions with weights
+`taper(r/R) / (r^2 + h^2)`, solves in least squares for a curved distance
+coordinate `phi` with `grad(phi) ~ direction` (its contours are the isobases),
+and then either applies the global profile to `phi` (every vector uses it) or
+integrates a blended gradient field (some vector is custom). A single vector
+with the global profile reproduces the planar azimuth model. Windowed and
+in-memory runs use the same model object and agree.
+
+**Validation** (`422`, `detail` names the vector by its 1-based row number):
+
+| rule | `detail` |
+|---|---|
+| not 1-200 vectors | `tilt_model.direction.vectors must contain 1 to 200 vectors.` |
+| `vectors` missing / present for `azimuth` | `tilt_model.direction.vectors is required when direction.type is 'vectors'.` / `... is only allowed when direction.type is 'vectors'.` |
+| `lat` / `lon` out of range | `Vector N: lat must be between -90 and 90.` / `... lon must be between -180 and 180.` |
+| `azimuth_deg` not in `[0, 360)` | `Vector N: azimuth_deg must be at least 0 and less than 360.` |
+| `range_km` given but not finite and > 0 | `Vector N: range_km, if given, must be finite and > 0.` |
+| custom `family` not `linear` / `quadratic` | `Vector N: custom.family must be one of ['linear', 'quadratic'].` |
+| `local_gradient` not finite | `Vector N: custom.local_gradient must be finite.` |
+| linear custom with `rate_of_increase` / `second_gradient` | `Vector N: a linear custom tilt takes neither rate_of_increase nor second_gradient.` |
+| quadratic custom without / with both forms | `Vector N: a quadratic custom tilt requires rate_of_increase or second_gradient.` / `... takes either rate_of_increase or second_gradient, not both.` |
+| bad `second_gradient` | `Vector N: second_gradient.distance_km must be finite and > 0.` / `... gradient_m_per_km must be finite.` |
+
+**Relaxed fields.** For `direction.type != "azimuth"`, `tilt_azimuth` is not
+needed. The messages say which condition applied:
+
+| condition | `detail` |
+|---|---|
+| `tilt_azimuth` missing, azimuth direction | `tilt_azimuth is required for a single-azimuth model.` |
+| `tilt_azimuth` / `tilt_factor` missing, no `tilt_model` | `tilt_azimuth is required for a basic run.` / `tilt_factor (gradient at the spillway) is required for a basic run.` |
+| `tilt_factor` missing, azimuth direction | `tilt_factor (gradient at the spillway) is required for a single-azimuth model.` |
+| `tilt_factor` missing, some vector has `custom: null` | `tilt_factor (global gradient at the spillway) is required because vector N uses the global profile.` |
+| `profile` missing, some vector has `custom: null` | `tilt_model.profile is required because vector N uses the global profile.` |
+
+When **every** vector is custom the global `profile` is unused: it may be
+omitted, and if sent it is ignored (`run_parameters.json` records `"profile":
+null`). The `hinge` still applies (its mode point, and the zero-gradient guard).
+
+**Hinge in gradient form** (custom tilts present): `origin` sets the gradient to
+zero wherever `phi < 0`, `distance` wherever `phi < -distance_km`, `none` applies
+no mode clamp; in every mode the guard also zeroes any negative gradient behind
+the spillway, so uplift never re-increases there. `hinge_source` is `"guard"`
+when the guard set a clamp (then `hinge_km` is the extent it reached,
+approximately -- the field has no single zero-gradient point), else `"mode"` /
+`null`.
+
+**Least-squares caveat.** Two custom gradients at one azimuth are not a
+curl-free field, so the least-squares surface trades some of the gradient for a
+slight tilt of the `U = 0` contour (a few metres in a typical basin) and a small
+non-zero drift behind the spillway. The map draws the spillway's own isobase from
+`phi = 0`.
+
+**Response additions.** `/api/process` in vectors mode adds a header
+
+```
+X-Tilt-Model-Diagnostics: {"misfit_rms_deg": 1.2, "misfit_max_deg": 2.9, "worst_vector": 1}
+```
+
+(`worst_vector` is a 0-based index into the submitted vectors; the fields are
+`null` when no vector lies inside the working grid), and `run_parameters.json`
+gains `diagnostics` (below). Model warnings -- vectors disagreeing strongly
+(near-opposite directions over > 1% of the area), a worst misfit above 15
+degrees, a vector far outside the DEM (more than half the DEM's diagonal beyond
+its bounds; it still counts) -- arrive in `X-Processing-Warnings` like any other.
+
+**Consistency with the preview.** `/api/uplift-preview` builds its grid from the
+preflight `bounds_wgs84`; a run builds it from the real working raster. They are
+identical when the raster is EPSG:4326 and negligibly different when it was
+reprojected (the preflight bounds are the reprojected WGS84 bounds). If they ever
+diverge, trust the run.
 
 ## `POST /api/profile-preview`
 
@@ -338,6 +446,43 @@ azimuth. If `origin` or `bounds_wgs84` is missing it falls back to
 bad model, `samples` out of range, malformed `origin` / `bounds_wgs84`, or a
 profile that evaluates to non-finite values over the range.
 
+## `POST /api/uplift-preview`
+
+The isobases and fit quality a `vectors` run would produce (the spatial
+generalisation of `/api/profile-preview`, which stays for the `azimuth`
+direction; each 422s and points at the other for the wrong `direction.type`).
+JSON body, no raster I/O.
+
+```json
+{
+  "tilt_azimuth": null, "tilt_factor": 0.35,
+  "tilt_model": { "...": "direction.type 'vectors'" },
+  "origin": [-110.5, 45.25],
+  "bounds_wgs84": [-111.0, 44.8, -110.0, 45.7]
+}
+```
+
+`origin` and `bounds_wgs84` are both required. The grid is built from the bounds
+with a synthetic 512x512 transform (only the bounds matter), through the same
+code a run uses. Same validation and messages as `/api/process`.
+
+```json
+{
+  "isobases": { "type": "FeatureCollection", "features": [ ... ] },  // LineStrings, property `uplift_m`
+  "interval_m": 10,                   // the smallest 1/2/5 x 10^n giving <= 12 nonzero levels
+  "vectors": [ { "index": 0, "misfit_deg": 2.1 }, ... ],   // null misfit: vector outside the working grid
+  "misfit_rms_deg": 2.4, "misfit_max_deg": 3.0, "worst_vector": 1,
+  "degenerate_fraction": 0.0,
+  "hinge_km": 0.0, "hinge_source": "mode",
+  "warnings": ["..."]
+}
+```
+
+Isobases are contours of the uplift grid at those levels, mapped back to
+lon/lat through `_local_en_to_lonlat`; the spillway's own (`uplift_m: 0`) is
+contoured from `phi`. A build takes about 0.3 s at a typical vector count (about
+0.8 s at the 200-vector maximum), so no reduced preview grid was needed.
+
 ## `run_parameters.json`
 
 Every `/api/process` zip carries this file, in every mode (a basic run has
@@ -354,13 +499,15 @@ frontend does not read it.
   "effective_target_elevation": 500.0,   // what the run actually contoured
   "target_elevation_source": "dem",      // "dem" | "manual"
   "submitted_target_elevation": 450.0,
-  "tilt_azimuth": 90.0,
-  "tilt_factor": 20.0,
+  "tilt_azimuth": 90.0,                  // null when omitted (vectors mode)
+  "tilt_factor": 20.0,                   // null when omitted (every vector custom)
   "tilt_model": {                        // the parsed, validated model, or null. A second-gradient
     "...": "..."                         // quadratic carries both `second_gradient` (as supplied) and
   },                                     // the derived `rate_of_increase`
   "hinge_km": -40.0,                     // where uplift stops changing, and what set it
   "hinge_source": "guard",               // "mode" | "guard" | null (both null for a basic run)
+  "diagnostics": null,                   // vectors mode only: { case, misfit_deg[], misfit_rms_deg,
+                                         // misfit_max_deg, worst_vector, degenerate_fraction, ranges_km[], grid }
   "include_dem": false,
   "selection_radius_km": null,
   "reprojected": { "was_reprojected": false, "from_crs": null }
@@ -464,7 +611,7 @@ ahead of a full run -- not a second source of truth, and not something
 
 | status | cause |
 |---|---|
-| `422` | neither or both of `dem_file`/`file_path` provided; `selection_radius_km` not finite or not `> 0`; an invalid `tilt_model` (see "Tilt model"); unsupported file extension; invalid `origin_mode`; missing `origin_epsg` for `epsg` mode; malformed `origin_value`; unrecognized `origin_epsg`; origin more than 500m from the raster's extent; `target_elevation` outside the DEM's elevation range |
+| `422` | neither or both of `dem_file`/`file_path` provided; a required `tilt_azimuth` / `tilt_factor` missing (see "Relaxed fields"); `selection_radius_km` not finite or not `> 0`; an invalid `tilt_model` (see "Tilt model"); unsupported file extension; invalid `origin_mode`; missing `origin_epsg` for `epsg` mode; malformed `origin_value`; unrecognized `origin_epsg`; origin more than 500m from the raster's extent; `target_elevation` outside the DEM's elevation range |
 | `413` | upload exceeds the configured size limit |
 | `400` | corrupted/unreadable GeoTIFF; `file_path` does not point to an existing file; other file-not-found conditions |
 | `500` | unexpected processing failure |
@@ -475,6 +622,9 @@ A `/api/process` response also carries these headers when applicable:
   wasn't already EPSG:4326.
 - `X-Processing-Warnings` -- backend `UserWarning`s, e.g. origin outside the
   raster's extent post-tilt.
+- `X-Tilt-Model-Diagnostics` -- vectors mode only: compact JSON of the direction
+  field's fit (`misfit_rms_deg`, `misfit_max_deg`, `worst_vector`). See "Vector
+  direction field".
 - `X-Target-Elevation-Source` -- always present; `"dem"` if the DEM's own
   elevation at the origin was used, `"manual"` if the submitted
   `target_elevation` was used instead. See "Target elevation resolution"

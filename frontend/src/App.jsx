@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import parseGeoraster from 'georaster'
 import { ProcessingProvider, useProcessing } from './context/ProcessingContext.jsx'
 import AppLayout from './components/shared/AppLayout.jsx'
@@ -11,12 +11,15 @@ import ResultsSuccess from './components/results/ResultsSuccess.jsx'
 import ResultsError from './components/results/ResultsError.jsx'
 import { runProcess } from './api/client.js'
 import { useProfilePreview } from './hooks/useProfilePreview.js'
+import { useUpliftPreview } from './hooks/useUpliftPreview.js'
 import { azimuthLine as computeAzimuthLine } from './utils/geometry.js'
 import { getReadiness, isReadyToRun, parseSelectionRadiusKm } from './utils/readiness.js'
 import { buildProcessPayload } from './utils/payload.js'
 import { classifyErrorStep } from './utils/steps.js'
+import { usingVectors } from './utils/tiltModel.js'
+import { fieldsFromGeometry, newVector, normalizeVectors, vectorsToMapData } from './utils/vectors.js'
 
-// Derives the map's input-preview shape from form state alone — the
+// Derives the map's input-preview shape from the form's fields alone — the
 // extent/origin/demCrs fields come from /api/preflight and
 // /api/resolve-point respectively (cached client-side in formState by
 // UploadStep.jsx / CoordinateSteps.jsx), but the azimuth line geometry
@@ -24,13 +27,15 @@ import { classifyErrorStep } from './utils/steps.js'
 // preview" half of the map contract; the "result preview" half (contour /
 // tiltedRasterPreview) gets populated separately once /process returns —
 // see the adapter in handleRunModel below.
-function deriveMapDataFromForm(formState) {
+function deriveMapDataFromForm(formState, vectorsMode) {
   const extent = formState.boundsWgs84 || null
   const origin = formState.resolvedOrigin || null
   const azimuthDeg = formState.tiltAzimuth !== '' ? Number(formState.tiltAzimuth) : null
 
+  // The single-azimuth line belongs to the azimuth direction source only; in
+  // vectors mode the arrows and isobases (added by the caller) take its place.
   let azimuthLine = null
-  if (extent && origin && azimuthDeg !== null && !Number.isNaN(azimuthDeg)) {
+  if (!vectorsMode && extent && origin && azimuthDeg !== null && !Number.isNaN(azimuthDeg)) {
     azimuthLine = computeAzimuthLine(origin, azimuthDeg, extent)
   }
 
@@ -66,7 +71,7 @@ async function deriveMapDataFromResult({ contour, tiltedRasterBytes }) {
 const IDLE_RUN_STATE = { status: 'idle', startedAt: null, result: null, resultMapData: null, error: null }
 
 function ProcessingPage() {
-  const { formState } = useProcessing()
+  const { formState, setVectors, selectVector, setMapEditMode, requestVectorFocus } = useProcessing()
   // Transient — deliberately not persisted to localStorage like formState,
   // so kept as local state here rather than in ProcessingContext.
   const [runState, setRunState] = useState(IDLE_RUN_STATE)
@@ -79,6 +84,56 @@ function ProcessingPage() {
   // Keeps formState.profilePreview current for the tilt-model chart and the
   // results screen's hinge summary, whichever view is showing.
   useProfilePreview()
+  // Likewise the vectors direction source's isobases and per-vector fit.
+  useUpliftPreview()
+
+  // Map data. Each field is memoized on its own inputs so MapPanel's per-layer
+  // effects only re-run for the layer that actually changed (an edit to the
+  // vectors must not rebuild the raster). The vector and isobase fields only
+  // exist in vectors mode.
+  const vectorsMode = usingVectors(formState)
+  const { boundsWgs84, resolvedOrigin, tiltAzimuth, selectionRadiusKm, rasterPreviewGeoraster } = formState
+  const inputMapData = useMemo(
+    () => deriveMapDataFromForm({ boundsWgs84, resolvedOrigin, tiltAzimuth, selectionRadiusKm, rasterPreviewGeoraster }, vectorsMode),
+    [boundsWgs84, resolvedOrigin, tiltAzimuth, selectionRadiusKm, rasterPreviewGeoraster, vectorsMode]
+  )
+  const vectorList = formState.advanced.vectors
+  const selectedVectorId = formState.selectedVectorId
+  const mapVectors = useMemo(() => {
+    if (!vectorsMode) return null
+    const list = vectorsToMapData(normalizeVectors(vectorList), selectedVectorId, boundsWgs84)
+    return list.length ? list : null
+  }, [vectorsMode, vectorList, selectedVectorId, boundsWgs84])
+  const isobases = vectorsMode ? formState.upliftPreview?.data?.isobases ?? null : null
+  const formMapData = useMemo(
+    () => ({ ...inputMapData, vectors: mapVectors, isobases }),
+    [inputMapData, mapVectors, isobases]
+  )
+  const resultMapData = runState.resultMapData
+  const resultsMapData = useMemo(() => ({ ...formMapData, ...(resultMapData || {}) }), [formMapData, resultMapData])
+
+  // Geometry edits from the map (vectors mode, form view only). All commit on
+  // drag end; structural ones are undoable.
+  const editing = vectorsMode
+    ? {
+        mode: formState.mapEditMode,
+        onAddVector: (geometry) => {
+          const v = newVector(fieldsFromGeometry(geometry))
+          setVectors((list) => [...list, v], { undoable: true })
+          selectVector(v.id)
+          // A click gives no azimuth: have the table take focus there.
+          if (!Number.isFinite(geometry.azimuthDeg)) requestVectorFocus(v.id)
+        },
+        onUpdateVector: (id, geometry) =>
+          setVectors(
+            (list) => list.map((v) => (v.id === id ? { ...v, ...fieldsFromGeometry(geometry) } : v)),
+            { undoable: true }
+          ),
+        onSelectVector: selectVector,
+        onExitAddMode: () => setMapEditMode('none')
+      }
+    : undefined
+  const compassAzimuth = vectorsMode ? '' : formState.tiltAzimuth
 
   async function handleRunModel() {
     if (!isReadyToRun(formState)) return
@@ -115,6 +170,7 @@ function ProcessingPage() {
 
   function handleModeSwitched() {
     setFocusRequest(null)
+    setMapEditMode('none') // an armed "Add on map" never survives a mode switch
     requestAnimationFrame(() => bodyRef.current?.scrollTo?.({ top: 0 }))
   }
 
@@ -125,14 +181,14 @@ function ProcessingPage() {
     // screen, not achievable earlier (see documentation/VISUALIZATION_PIPELINE_SPEC.md
     // Stage 3 / documentation/GIA_Tool_Penpot_Spec.md). The results panel
     // replaces the form column and the mode switch is hidden. Carries the
-    // input-preview fields (extent/origin/azimuthLine) forward for context
-    // alongside whatever the result adapter produced.
-    const mapData = { ...deriveMapDataFromForm(formState), ...(runState.resultMapData || {}) }
+    // input-preview fields (extent/origin/azimuthLine, and the vector arrows and
+    // isobases, display-only here) forward for context alongside whatever the
+    // result adapter produced.
 
     return (
       <AppLayout
         bodyRef={bodyRef}
-        map={<MapPanel mapData={mapData} azimuthDeg={formState.tiltAzimuth} />}
+        map={<MapPanel mapData={resultsMapData} azimuthDeg={compassAzimuth} />}
       >
         <div className="p-5">
           {runState.status === 'running' && <LoadingState startedAt={runState.startedAt} />}
@@ -156,7 +212,7 @@ function ProcessingPage() {
     <AppLayout
       bodyRef={bodyRef}
       modeSwitch={<ModeSwitch onSwitch={handleModeSwitched} />}
-      map={<MapPanel mapData={deriveMapDataFromForm(formState)} azimuthDeg={formState.tiltAzimuth} />}
+      map={<MapPanel mapData={formMapData} azimuthDeg={compassAzimuth} editing={editing} />}
       footer={
         <>
           <button

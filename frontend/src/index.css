@@ -1,3 +1,10 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Tailwind's preflight caps svg at max-width:100%, which Leaflet only overrides
+   inside its default overlay pane; the map's own overlay panes need it too. */
+.leaflet-pane svg {
+  max-width: none !important;
+  max-height: none !important;
+}

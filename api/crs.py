@@ -13,17 +13,14 @@ UTM-CRS raster).
 This module is the fix, applied entirely at the API boundary so main.py and
 its existing test suite stay untouched:
 
-  1. normalize_origin_to_wgs84 -- takes an (x, y, crs) origin and reprojects
-     it to (lon, lat) in EPSG:4326.
-  2. parse_xy_pair / parse_decimal_degrees_hemisphere -- parse the client's
-     origin_value string per origin_mode (see api/main.py) into either a raw
-     (x, y) pair or directly into (lon, lat), before any CRS work happens.
-  3. get_raster_crs / get_raster_bounds_wgs84 -- inspect the uploaded
+  1. parse_decimal_degrees_hemisphere -- parses the client's origin_value
+     (hemisphere-annotated decimal degrees, the only origin format) directly
+     into (lon, lat).
+  2. get_raster_crs / get_raster_bounds_wgs84 -- inspect the uploaded
      GeoTIFF's own CRS and its extent reprojected to EPSG:4326.
-  4. check_origin_within_threshold -- a geodesic plausibility check, applied
-     the same way regardless of origin_mode, that rejects an origin
-     implausibly far from the raster's extent.
-  5. ensure_wgs84_raster -- inspects the uploaded GeoTIFF's CRS and, if it
+  3. check_origin_within_threshold -- a geodesic plausibility check that
+     rejects an origin implausibly far from the raster's extent.
+  4. ensure_wgs84_raster -- inspects the uploaded GeoTIFF's CRS and, if it
      isn't already EPSG:4326, reprojects the whole raster to a new file in
      EPSG:4326 before it's ever handed to app.process_dem.
 
@@ -38,8 +35,7 @@ import numpy as np
 import rasterio
 from rasterio.transform import array_bounds
 from rasterio.warp import calculate_default_transform, reproject, Resampling
-from pyproj import CRS, Geod, Transformer
-from pyproj.exceptions import CRSError
+from pyproj import CRS, Geod
 
 WGS84 = "EPSG:4326"
 
@@ -50,59 +46,6 @@ class InvalidCRSError(ValueError):
 
 class InvalidOriginError(ValueError):
     """Raised when a client-supplied origin coordinate is out of range."""
-
-
-def _parse_crs(crs_input: str) -> CRS:
-    try:
-        return CRS.from_user_input(crs_input)
-    except CRSError as e:
-        raise InvalidCRSError(
-            f"'{crs_input}' is not a recognized CRS identifier. "
-            "Use an EPSG code (e.g. 'EPSG:32612') or a recognized CRS name."
-        ) from e
-
-
-def normalize_origin_to_wgs84(x: float, y: float, source_crs: str) -> tuple[float, float]:
-    """
-    Reprojects a client-supplied origin point into (lon, lat) in EPSG:4326.
-
-    x, y are in the order native to source_crs (e.g. easting, northing for a
-    projected CRS; lon, lat for a geographic one) -- NOT assumed to already
-    be lon/lat. Raises InvalidCRSError for an unrecognized CRS identifier,
-    or InvalidOriginError if the resulting point is outside valid WGS84
-    bounds (a strong signal the client sent x/y in the wrong order, or under
-    the wrong CRS).
-    """
-    crs = _parse_crs(source_crs)
-    transformer = Transformer.from_crs(crs, WGS84, always_xy=True)
-    lon, lat = transformer.transform(x, y)
-
-    if not (-180.0 <= lon <= 180.0 and -90.0 <= lat <= 90.0):
-        raise InvalidOriginError(
-            f"Origin ({x}, {y}) in {source_crs} reprojects to ({lon}, {lat}), "
-            "which is outside valid WGS84 bounds. Check the coordinate order "
-            "and CRS -- for a projected CRS this is usually (easting, northing)."
-        )
-    return lon, lat
-
-
-def parse_xy_pair(value: str) -> tuple[float, float]:
-    """
-    Parses a plain "x,y" pair of floats -- no CRS or hemisphere info implied.
-
-    Shared by the 'match_raster' and 'epsg' origin modes, where the caller
-    already knows (from the raster's own CRS, or from origin_epsg) what x
-    and y mean; this function just handles the comma-separated-floats
-    syntax common to both.
-    """
-    tokens = [t.strip() for t in value.split(",")]
-    if len(tokens) != 2:
-        raise InvalidOriginError(f"Expected two comma-separated numbers, got: '{value}'")
-    try:
-        x, y = float(tokens[0]), float(tokens[1])
-    except ValueError as e:
-        raise InvalidOriginError(f"'{value}' isn't a valid 'x,y' numeric pair.") from e
-    return x, y
 
 
 def parse_decimal_degrees_hemisphere(value: str) -> tuple[float, float]:
@@ -148,16 +91,14 @@ def get_raster_crs(path: str) -> str:
     """
     Returns the raster's own native CRS as a string (e.g. "EPSG:32612").
 
-    Used by the 'match_raster' origin mode, where the client's origin_value
-    is expressed in whatever CRS the raster is already in -- so the client
-    needs no CRS knowledge, but we still need to know what that CRS is
-    before the coordinate can be reprojected to WGS84.
+    Reported by /api/preflight so the client can show what the DEM is in
+    (it is reprojected to EPSG:4326 before processing either way).
     """
     with rasterio.open(path) as src:
         if src.crs is None:
             raise InvalidCRSError(
-                "The uploaded GeoTIFF has no CRS defined, so 'match_raster' can't "
-                "determine what CRS the origin coordinates are in."
+                "The uploaded GeoTIFF has no CRS defined, so it can't be "
+                "reprojected to EPSG:4326."
             )
         return str(src.crs)
 

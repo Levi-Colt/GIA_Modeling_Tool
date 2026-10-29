@@ -1,5 +1,6 @@
-// The vectors UI inside the Tilt model section (spec 5): direction-source switch,
-// the table, custom rows, fit column, CSV import, and the map-editing toggles.
+// The vectors UI inside the Tilt model section (spec 5): the optional "multiple
+// directions" checkbox, the draw-on-the-map table, custom rows, fit column and the
+// map-editing toggles. Vectors are only ever drawn on the map: no add-row, no import.
 import { describe, it, expect, beforeEach } from 'vitest'
 import { render, screen, act, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -34,29 +35,29 @@ function withVectors(vectors) {
     ctx.setVectors(vectors)
   })
 }
-const sourceButton = (name) => screen.getByRole('button', { name })
+const multiBox = () => screen.getByRole('checkbox', { name: 'Use multiple directions' })
 
 beforeEach(() => window.localStorage.clear())
 
-describe('direction source', () => {
-  it('defaults to Single azimuth: the azimuth input, the profile chart, no table', () => {
+describe('multiple directions', () => {
+  it('is off by default: the azimuth input, the profile chart, no table', () => {
     renderBody()
-    expect(sourceButton('Single azimuth')).toHaveAttribute('aria-pressed', 'true')
-    expect(sourceButton('Vectors')).toHaveAttribute('aria-pressed', 'false')
+    expect(multiBox()).not.toBeChecked()
     expect(screen.getByLabelText('Single azimuth')).toBeInTheDocument()
     expect(screen.getByText('Uplift preview')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '+ Add row' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Draw vector' })).not.toBeInTheDocument()
   })
 
-  it('Vectors replaces the azimuth input and the 1D chart with the table and the fit summary', async () => {
+  it('checking it replaces the azimuth input and the 1D chart with the table and fit summary, and arms drawing', async () => {
     const user = userEvent.setup()
     renderBody()
-    await user.click(sourceButton('Vectors'))
+    await user.click(multiBox())
 
     expect(ctx.formState.advanced.directionSource).toBe('vectors')
-    expect(sourceButton('Vectors')).toHaveAttribute('aria-pressed', 'true')
+    expect(ctx.formState.mapEditMode).toBe('addVector')
+    expect(multiBox()).toBeChecked()
     expect(screen.queryByLabelText('Single azimuth')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '+ Add row' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Draw vector' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByText('Global profile (whole DEM)')).toBeInTheDocument()
     // The gradient at the spillway is still there (the global profile's), and the hinge.
     expect(screen.getByLabelText('Gradient at spillway (m/km)')).toBeInTheDocument()
@@ -66,28 +67,46 @@ describe('direction source', () => {
     expect(screen.getByText(/Complete the vectors, DEM and origin/)).toBeInTheDocument()
   })
 
-  it('switching back and forth keeps the typed azimuth, gradient and vectors', async () => {
+  it('there is no way to add a row by hand or import a file', () => {
+    renderBody()
+    withVectors([])
+    expect(screen.queryByRole('button', { name: '+ Add row' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Import CSV' })).not.toBeInTheDocument()
+  })
+
+  it('unchecking returns to the single azimuth and keeps the typed azimuth, gradient and drawn vectors', async () => {
     const user = userEvent.setup()
     renderBody()
     await user.type(screen.getByLabelText('Single azimuth'), '45')
     await user.type(screen.getByLabelText('Gradient at spillway (m/km)'), '0.35')
-    await user.click(sourceButton('Vectors'))
+    await user.click(multiBox())
     act(() => ctx.setVectors([global()]))
-    await user.click(sourceButton('Single azimuth'))
+    await user.click(multiBox())
 
+    expect(ctx.formState.advanced.directionSource).toBe('azimuth')
     expect(screen.getByLabelText('Single azimuth')).toHaveValue(45)
     expect(screen.getByLabelText('Gradient at spillway (m/km)')).toHaveValue(0.35)
     expect(ctx.formState.advanced.vectors).toHaveLength(1)
   })
 
-  it('leaving vectors mode disarms "Add on map"', async () => {
+  it('unchecking disarms drawing', async () => {
     const user = userEvent.setup()
     renderBody()
-    await user.click(sourceButton('Vectors'))
-    await user.click(screen.getByRole('button', { name: 'Add on map' }))
+    await user.click(multiBox())
     expect(ctx.formState.mapEditMode).toBe('addVector')
-    await user.click(sourceButton('Single azimuth'))
+    await user.click(multiBox())
     expect(ctx.formState.mapEditMode).toBe('none')
+  })
+
+  it('switching to Shore points and back lands on the single azimuth', async () => {
+    const user = userEvent.setup()
+    renderBody()
+    await user.click(multiBox())
+    await user.click(screen.getByRole('button', { name: 'Shore points' }))
+    expect(ctx.formState.advanced.directionSource).toBe('points')
+    expect(ctx.formState.mapEditMode).toBe('none')
+    await user.click(screen.getByRole('button', { name: 'Uplift direction' }))
+    expect(ctx.formState.advanced.directionSource).toBe('azimuth')
   })
 })
 
@@ -99,21 +118,28 @@ describe('vectors table', () => {
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
 
-  it('+ Add row adds a numbered, labelled, empty row and selects it', async () => {
-    const user = userEvent.setup()
+  it('a drawn row is numbered and labelled, with editable start point, azimuth and range', () => {
     renderBody()
-    withVectors([])
-    await user.click(screen.getByRole('button', { name: '+ Add row' }))
+    const v = newVector({ lat: '45', lon: '-105', azimuthDeg: '30', rangeKm: '80' })
+    withVectors([v])
 
-    expect(ctx.formState.advanced.vectors).toHaveLength(1)
     const headers = screen.getAllByRole('columnheader').map((h) => h.textContent)
     expect(headers).toEqual(['#', 'Lat', 'Lon', 'Azim °', 'Range km', 'Tilt', 'Fit °', 'Remove'])
-    expect(screen.getByLabelText('Vector 1 latitude')).toHaveValue('')
-    expect(screen.getByLabelText('Vector 1 longitude')).toBeInTheDocument()
-    expect(screen.getByLabelText('Vector 1 azimuth')).toBeInTheDocument()
-    expect(screen.getByLabelText('Vector 1 range (km)')).toBeInTheDocument()
+    expect(screen.getByLabelText('Vector 1 latitude')).toHaveValue('45')
+    expect(screen.getByLabelText('Vector 1 longitude')).toHaveValue('-105')
+    expect(screen.getByLabelText('Vector 1 azimuth')).toHaveValue('30')
+    expect(screen.getByLabelText('Vector 1 range (km)')).toHaveValue('80')
     expect(screen.getByLabelText('Vector 1 tilt')).toHaveValue('global')
-    expect(ctx.formState.selectedVectorId).toBe(ctx.formState.advanced.vectors[0].id)
+  })
+
+  it('editing a cell edits the vector (the map redraws from the same row)', async () => {
+    const user = userEvent.setup()
+    renderBody()
+    withVectors([global()])
+    const az = screen.getByLabelText('Vector 1 azimuth')
+    await user.clear(az)
+    await user.type(az, '95')
+    expect(ctx.formState.advanced.vectors[0].azimuthDeg).toBe('95')
   })
 
   it('placeholders are units only, with no example values', async () => {
@@ -276,16 +302,16 @@ describe('custom rows', () => {
 })
 
 describe('map editing controls', () => {
-  it('"Add on map" toggles the transient edit mode', async () => {
+  it('"Draw vector" toggles the transient edit mode', async () => {
     const user = userEvent.setup()
     renderBody()
     withVectors([])
-    const toggle = screen.getByRole('button', { name: 'Add on map' })
+    const toggle = screen.getByRole('button', { name: 'Draw vector' })
     expect(toggle).toHaveAttribute('aria-pressed', 'false')
     await user.click(toggle)
     expect(ctx.formState.mapEditMode).toBe('addVector')
     expect(toggle).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByText(/Drag on the map to place a vector/)).toBeInTheDocument()
+    expect(screen.getByText(/Drag on the map to draw a vector/)).toBeInTheDocument()
     await user.click(toggle)
     expect(ctx.formState.mapEditMode).toBe('none')
   })
@@ -297,76 +323,5 @@ describe('map editing controls', () => {
     act(() => ctx.requestVectorFocus(v.id))
     expect(screen.getByLabelText('Vector 1 azimuth')).toHaveFocus()
     expect(ctx.formState.vectorFocusRequest).toBeNull() // handled, so a remount can't steal focus again
-  })
-})
-
-describe('CSV import', () => {
-  const file = (text) => new File([text], 'vectors.csv', { type: 'text/csv' })
-
-  it('imports rows, reports skipped ones, and puts the good ones in the table', async () => {
-    const user = userEvent.setup()
-    renderBody()
-    withVectors([])
-    await user.click(screen.getByRole('button', { name: 'Import CSV' }))
-    await user.upload(
-      screen.getByLabelText('CSV file'),
-      file('lat,lon,azimuth\n45,-105,30\n45,-105,\n95,-105,10\n46,-104,40\n')
-    )
-
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      '2 imported, 2 skipped: row 2 azimuth missing, row 3 latitude out of range (replaced the vector list)'
-    )
-    expect(ctx.formState.advanced.vectors.map((v) => v.lat)).toEqual(['45', '46'])
-    expect(screen.getByLabelText('Vector 2 latitude')).toHaveValue('46')
-  })
-
-  it('with vectors already present it asks Replace or Append, with buttons (not a confirm())', async () => {
-    const user = userEvent.setup()
-    renderBody()
-    withVectors([global({ lat: '1' })])
-    await user.click(screen.getByRole('button', { name: 'Import CSV' }))
-    await user.upload(screen.getByLabelText('CSV file'), file('lat,lon,azimuth\n10,-105,30\n11,-105,30\n'))
-
-    expect(await screen.findByRole('button', { name: 'Replace existing vectors' })).toBeInTheDocument()
-    expect(ctx.formState.advanced.vectors).toHaveLength(1) // nothing applied yet
-
-    await user.click(screen.getByRole('button', { name: 'Append' }))
-    expect(ctx.formState.advanced.vectors.map((v) => v.lat)).toEqual(['1', '10', '11'])
-    expect(screen.getByRole('status')).toHaveTextContent('2 imported (appended to the vector list)')
-    expect(screen.queryByRole('button', { name: 'Replace existing vectors' })).not.toBeInTheDocument()
-  })
-
-  it('Replace discards the existing vectors; the import is one undo step', async () => {
-    const user = userEvent.setup()
-    renderBody()
-    withVectors([global({ lat: '1' }), global({ lat: '2' })])
-    await user.click(screen.getByRole('button', { name: 'Import CSV' }))
-    await user.upload(screen.getByLabelText('CSV file'), file('lat,lon,azimuth,gradient\n10,-105,30,0.5\n'))
-    await user.click(await screen.findByRole('button', { name: 'Replace existing vectors' }))
-
-    expect(ctx.formState.advanced.vectors).toHaveLength(1)
-    expect(ctx.formState.advanced.vectors[0]).toMatchObject({ lat: '10', tilt: 'custom' }) // gradient => custom
-    await user.click(screen.getByRole('button', { name: 'Undo' }))
-    expect(ctx.formState.advanced.vectors.map((v) => v.lat)).toEqual(['1', '2'])
-  })
-
-  it('Cancel leaves the vectors alone', async () => {
-    const user = userEvent.setup()
-    renderBody()
-    withVectors([global({ lat: '1' })])
-    await user.click(screen.getByRole('button', { name: 'Import CSV' }))
-    await user.upload(screen.getByLabelText('CSV file'), file('lat,lon,azimuth\n10,-105,30\n'))
-    await user.click(await screen.findByRole('button', { name: 'Cancel' }))
-    expect(ctx.formState.advanced.vectors.map((v) => v.lat)).toEqual(['1'])
-  })
-
-  it('a file missing a required column shows an error and imports nothing', async () => {
-    const user = userEvent.setup()
-    renderBody()
-    withVectors([global({ lat: '1' })])
-    await user.click(screen.getByRole('button', { name: 'Import CSV' }))
-    await user.upload(screen.getByLabelText('CSV file'), file('lat,lon\n10,-105\n'))
-    expect(await screen.findByRole('alert')).toHaveTextContent(/needs an azimuth column/)
-    expect(ctx.formState.advanced.vectors).toHaveLength(1)
   })
 })

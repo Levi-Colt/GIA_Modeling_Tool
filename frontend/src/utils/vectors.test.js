@@ -9,7 +9,6 @@ import {
   isobaseLabel,
   newVector,
   normalizeVectors,
-  parseVectorsCsv,
   popUndo,
   pushUndo,
   vectorIssues,
@@ -215,96 +214,6 @@ describe('undo stack', () => {
     pushUndo(stack, [2])
     popUndo(stack)
     expect(stack).toEqual([[1]])
-  })
-})
-
-describe('parseVectorsCsv', () => {
-  it('matches header aliases without regard to case', () => {
-    for (const header of ['lat,lon,azimuth', 'Latitude,Longitude,AZ', 'LAT,LNG,azimuth_deg', 'latitude , long , Azimuth']) {
-      const r = parseVectorsCsv(`${header}\n45.5,-105.25,30\n`)
-      expect(r.error).toBeNull()
-      expect(r.vectors).toHaveLength(1)
-      expect(r.vectors[0]).toMatchObject({ lat: '45.5', lon: '-105.25', azimuthDeg: '30', rangeKm: '', tilt: 'global' })
-    }
-  })
-
-  it('reads the optional range, and a gradient column makes the row a custom linear tilt', () => {
-    const r = parseVectorsCsv('lat,lon,azimuth,range_km,gradient\n45,-105,30,120,0.6\n46,-106,40,,\n')
-    expect(r.vectors[0]).toMatchObject({ rangeKm: '120', tilt: 'custom' })
-    expect(r.vectors[0].custom).toMatchObject({ family: 'linear', localGradient: '0.6' })
-    expect(r.vectors[1]).toMatchObject({ rangeKm: '', tilt: 'global' })
-  })
-
-  it('a rate alongside a gradient makes it a custom quadratic on the rate form', () => {
-    const r = parseVectorsCsv('lat,lon,azimuth,local_gradient,rate_of_increase\n45,-105,30,0.6,0.004\n')
-    expect(r.vectors[0].tilt).toBe('custom')
-    expect(r.vectors[0].custom).toMatchObject({
-      family: 'quadratic', localGradient: '0.6', curvatureInput: 'rate', rateOfIncrease: '0.004'
-    })
-  })
-
-  it('skips invalid rows whole, reporting the data-row number and reason; good rows still import', () => {
-    const csv = [
-      'lat,lon,azimuth,range,gradient,rate',
-      '45,-105,30,,,', //            row 1 ok
-      '45,-105,,,,', //              row 2 azimuth missing
-      '95,-105,30,,,', //            row 3 latitude out of range
-      '45,-200,30,,,', //            row 4 longitude out of range
-      'abc,-105,30,,,', //           row 5 latitude not a number
-      '45,-105,30,0,,', //           row 6 range must be > 0
-      '45,-105,30,,x,', //           row 7 gradient not a number
-      '45,-105,30,,,0.1', //         row 8 rate without gradient
-      '46,-106,40,10,,' //           row 9 ok
-    ].join('\n')
-    const r = parseVectorsCsv(csv)
-    expect(r.vectors.map((v) => v.lat)).toEqual(['45', '46'])
-    expect(r.skipped).toEqual([
-      { row: 2, reason: 'azimuth missing' },
-      { row: 3, reason: 'latitude out of range' },
-      { row: 4, reason: 'longitude out of range' },
-      { row: 5, reason: 'latitude is not a number' },
-      { row: 6, reason: 'range must be greater than 0' },
-      { row: 7, reason: 'gradient is not a number' },
-      { row: 8, reason: 'rate given without a gradient' }
-    ])
-    expect(describeImport(r)).toBe(
-      '2 imported, 7 skipped: row 2 azimuth missing, row 3 latitude out of range, row 4 longitude out of range, ' +
-        'row 5 latitude is not a number, row 6 range must be greater than 0, and 2 more'
-    )
-  })
-
-  it('reports the spec example shape: "12 imported, 2 skipped: row 5 azimuth missing, row 9 latitude out of range"', () => {
-    const rows = Array.from({ length: 14 }, (_, i) => `45,-105,${i}`)
-    rows[4] = '45,-105,'
-    rows[8] = '95,-105,10'
-    const r = parseVectorsCsv(`lat,lon,azimuth\n${rows.join('\n')}`)
-    expect(describeImport(r)).toBe('12 imported, 2 skipped: row 5 azimuth missing, row 9 latitude out of range')
-  })
-
-  it('handles quoted fields, blank lines and surrounding whitespace', () => {
-    const r = parseVectorsCsv('lat,lon,azimuth,note\n" 45.5 ",-105,30,"a, quoted, note"\n\n')
-    expect(r.error).toBeNull()
-    expect(r.vectors).toHaveLength(1)
-    expect(r.vectors[0].lat).toBe('45.5')
-  })
-
-  it('normalizes the azimuth into [0, 360)', () => {
-    const r = parseVectorsCsv('lat,lon,azimuth\n45,-105,-10\n45,-105,370\n')
-    expect(r.vectors.map((v) => v.azimuthDeg)).toEqual(['350', '10'])
-  })
-
-  it('errors, importing nothing, when a required column is missing or there are no rows', () => {
-    const noAzimuth = parseVectorsCsv('lat,lon\n45,-105\n')
-    expect(noAzimuth.error).toMatch(/needs an azimuth column/)
-    expect(noAzimuth.vectors).toEqual([])
-    expect(parseVectorsCsv('x,y,z\n1,2,3').error).toMatch(/needs a lat, a lon, an azimuth columns/)
-    expect(parseVectorsCsv('lat,lon,azimuth\n').error).toBe('The CSV has no data rows.')
-    expect(parseVectorsCsv('').error).toMatch(/needs/)
-  })
-
-  it('imported rows get distinct ids', () => {
-    const r = parseVectorsCsv('lat,lon,azimuth\n45,-105,30\n46,-105,30\n')
-    expect(new Set(r.vectors.map((v) => v.id)).size).toBe(2)
   })
 })
 

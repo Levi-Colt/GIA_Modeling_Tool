@@ -13,7 +13,6 @@ function tiltModel(advanced) {
 const form = {
   demFile: null,
   demPath: '/data/dem.tif',
-  originMode: 'decimal_degrees',
   originValue: '40, -105',
   originEpsg: '',
   tiltAzimuth: '45',
@@ -61,7 +60,6 @@ describe('buildProcessPayload', () => {
   it('keeps the existing fields', () => {
     expect(buildProcessPayload(form)).toMatchObject({
       file_path: '/data/dem.tif',
-      origin_mode: 'decimal_degrees',
       include_dem: true
     })
   })

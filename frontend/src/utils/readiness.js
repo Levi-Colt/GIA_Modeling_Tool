@@ -24,7 +24,6 @@ export function getReadiness(formState) {
 
   if (formState.preflightStatus !== 'valid') need('dem', 'a valid DEM')
   if (!formState.originValue) need('origin', 'origin coordinates')
-  if (formState.originMode === 'epsg' && !formState.originEpsg) need('origin', 'origin EPSG code')
   if (usingVectors(formState)) {
     // Vectors mode (Advanced only): no single azimuth, and the gradient at the
     // spillway is needed only while some vector uses the global profile.

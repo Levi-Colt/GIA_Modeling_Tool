@@ -9,21 +9,22 @@ and tests/test_api_origin_elevation.py use.
 """
 import asyncio
 
+import pytest
+from fastapi import HTTPException
+
 from starlette.background import BackgroundTasks
 
 from api.main import process
 
 
-def _run(file_path, origin_mode, origin_value, target_elevation, origin_epsg=None):
+def _run(file_path, origin_value, target_elevation):
     async def _call():
         background_tasks = BackgroundTasks()
         response = await process(
             background_tasks=background_tasks,
             dem_file=None,
             file_path=file_path,
-            origin_mode=origin_mode,
             origin_value=origin_value,
-            origin_epsg=origin_epsg,
             tilt_azimuth=90,
             tilt_factor=0.0,
             target_elevation=target_elevation,
@@ -40,7 +41,7 @@ def _run(file_path, origin_mode, origin_value, target_elevation, origin_epsg=Non
 def test_dem_value_overrides_submitted_target_elevation(flat_dem_path):
     # flat_dem_path is 1000.0 m everywhere; submitted target_elevation (500)
     # deliberately disagrees with it.
-    response = _run(flat_dem_path, "decimal_degrees", "44.945N,104.945W", target_elevation=500)
+    response = _run(flat_dem_path, "44.945N,104.945W", target_elevation=500)
 
     assert response.headers["X-Target-Elevation-Source"] == "dem"
     note = response.headers["X-Target-Elevation-Note"]
@@ -52,7 +53,7 @@ def test_matching_submitted_value_gets_no_note(flat_dem_path):
     # Submitted value already matches the DEM's actual elevation at the
     # origin (e.g. frontend preview pre-filled it) -- source is still "dem",
     # but no note is needed since there's nothing to explain.
-    response = _run(flat_dem_path, "decimal_degrees", "44.945N,104.945W", target_elevation=1000.0)
+    response = _run(flat_dem_path, "44.945N,104.945W", target_elevation=1000.0)
 
     assert response.headers["X-Target-Elevation-Source"] == "dem"
     assert "X-Target-Elevation-Note" not in response.headers
@@ -63,7 +64,15 @@ def test_manual_value_used_when_origin_outside_dem(sloped_dem_path):
     # origin is ~136m past the SE corner -- within the 500m plausibility
     # threshold but genuinely outside the raster's own grid, so there's
     # nothing to sample.
-    response = _run(sloped_dem_path, "decimal_degrees", "44.899000N,104.899000W", target_elevation=450)
+    response = _run(sloped_dem_path, "44.899000N,104.899000W", target_elevation=450)
 
     assert response.headers["X-Target-Elevation-Source"] == "manual"
     assert "X-Target-Elevation-Note" not in response.headers
+
+
+def test_a_bare_xy_origin_is_rejected(flat_dem_path):
+    # Origin input is hemisphere-annotated decimal degrees only; the old
+    # native-CRS / EPSG "x,y" forms no longer parse.
+    with pytest.raises(HTTPException) as exc_info:
+        _run(flat_dem_path, "500000,4980000", target_elevation=500)
+    assert exc_info.value.status_code == 422

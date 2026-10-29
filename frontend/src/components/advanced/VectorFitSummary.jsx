@@ -25,7 +25,7 @@ export default function VectorFitSummary({ preview }) {
       {data ? (
         <p className={`text-xs text-gray-700 ${preview.status === 'loading' ? 'opacity-60' : ''}`}>{describeFit(data)}</p>
       ) : (
-        <p className="rounded-md border border-dashed border-gray-300 px-3 py-4 text-center text-xs text-gray-500">
+        <p className="rounded-md bg-gray-50 px-3 py-4 text-center text-xs text-gray-500">
           {preview?.status === 'error'
             ? preview.error
             : preview?.status === 'loading'

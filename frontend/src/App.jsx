@@ -12,6 +12,8 @@ import ResultsError from './components/results/ResultsError.jsx'
 import { runProcess } from './api/client.js'
 import { useProfilePreview } from './hooks/useProfilePreview.js'
 import { useUpliftPreview } from './hooks/useUpliftPreview.js'
+import { useOriginChecks } from './hooks/useOriginChecks.js'
+import { formatDecimalDegrees, roundedLonLat } from './utils/origin.js'
 import { surfaceFitKey, useSurfaceFit } from './hooks/useSurfaceFit.js'
 import { azimuthLine as computeAzimuthLine } from './utils/geometry.js'
 import { getReadiness, isReadyToRun, parseSelectionRadiusKm } from './utils/readiness.js'
@@ -74,7 +76,8 @@ async function deriveMapDataFromResult({ contour, tiltedRasterBytes }) {
 const IDLE_RUN_STATE = { status: 'idle', startedAt: null, result: null, resultMapData: null, error: null }
 
 function ProcessingPage() {
-  const { formState, setVectors, selectVector, setMapEditMode, requestVectorFocus } = useProcessing()
+  const { formState, updateForm, setVectors, selectVector, setMapEditMode, requestVectorFocus } = useProcessing()
+  const { checkElevation } = useOriginChecks()
   // Transient — deliberately not persisted to localStorage like formState,
   // so kept as local state here rather than in ProcessingContext.
   const [runState, setRunState] = useState(IDLE_RUN_STATE)
@@ -83,7 +86,7 @@ function ProcessingPage() {
   // mode switches so a stale request can't re-fire when the other form mounts.
   const [focusRequest, setFocusRequest] = useState(null)
   const bodyRef = useRef(null)
-  const { ready, missingText } = getReadiness(formState)
+  const { ready } = getReadiness(formState)
   // Keeps formState.profilePreview current for the tilt-model chart and the
   // results screen's hinge summary, whichever view is showing.
   useProfilePreview()
@@ -167,6 +170,25 @@ function ProcessingPage() {
         onExitAddMode: () => setMapEditMode('none')
       }
     : undefined
+  // Click-to-place origin: a map click always yields usable lon/lat, so it writes
+  // straight into the (decimal-degrees) coordinate field. The marker moves at once;
+  // only the DEM-elevation lookup needs a round trip.
+  const originPicking = {
+    active: formState.mapEditMode === 'setOrigin',
+    onPick: ({ lon, lat }) => {
+      const value = formatDecimalDegrees(lon, lat)
+      updateForm({
+        originValue: value,
+        resolvedOrigin: roundedLonLat(lon, lat),
+        resolveOriginStatus: 'resolved',
+        resolveOriginMessage: '',
+        elevationCheckStatus: 'idle',
+        mapEditMode: 'none'
+      })
+      checkElevation(value)
+    },
+    onExit: () => setMapEditMode('none')
+  }
   const compassAzimuth = vectorsMode || pointsMode ? '' : formState.tiltAzimuth
 
   async function handleRunModel() {
@@ -246,7 +268,7 @@ function ProcessingPage() {
     <AppLayout
       bodyRef={bodyRef}
       modeSwitch={<ModeSwitch onSwitch={handleModeSwitched} />}
-      map={<MapPanel mapData={formMapData} azimuthDeg={compassAzimuth} editing={editing} />}
+      map={<MapPanel mapData={formMapData} azimuthDeg={compassAzimuth} editing={editing} originPicking={originPicking} />}
       footer={
         <>
           <button
@@ -258,7 +280,8 @@ function ProcessingPage() {
             Run model
           </button>
           {!ready && (
-            <p className="mt-1 text-xs text-gray-500">Still needed: {missingText.join(', ')}</p>
+            // The blue-outlined fields say what is missing; this only points at them.
+            <p className="mt-1 text-xs text-gray-500">Complete the highlighted fields to run.</p>
           )}
         </>
       }

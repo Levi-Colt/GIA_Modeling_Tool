@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useProcessing } from '../../context/ProcessingContext.jsx'
 import CollapsibleSection from '../shared/CollapsibleSection.jsx'
 import UploadStep from '../steps/UploadStep.jsx'
-import { CoordinateModeStep, CoordinatesStep } from '../steps/CoordinateSteps.jsx'
+import { CoordinatesStep } from '../steps/CoordinateSteps.jsx'
 import { TargetElevationField, ProductsStep } from '../steps/TiltAndProductsSteps.jsx'
 import TiltModelBody from '../advanced/TiltModelBody.jsx'
 import { getReadiness, parseSelectionRadiusKm } from '../../utils/readiness.js'
@@ -105,7 +105,6 @@ export default function AdvancedForm({ focusRequest }) {
       status: { complete: originNeeds.length === 0, summary: originSummary, mono: true, needs: originNeeds },
       body: (
         <div className="space-y-2">
-          <CoordinateModeStep />
           <CoordinatesStep />
           <TargetElevationField />
         </div>

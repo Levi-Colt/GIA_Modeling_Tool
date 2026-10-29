@@ -3,11 +3,9 @@ API layer for the GIA Modeling Tool.
 
 One endpoint, POST /process, wraps backend.app.process_dem with:
   - multipart file upload for the DEM
-  - three explicit, unambiguous origin input modes (origin_mode /
-    origin_value / origin_epsg -- see api/crs.py and
-    documentation/api-README.md),
-    normalized to EPSG:4326, plus a geodesic plausibility check against
-    the raster's own extent that applies underneath all three
+  - one origin input format: hemisphere-annotated decimal degrees
+    (origin_value -- see api/crs.py and documentation/api-README.md),
+    plus a geodesic plausibility check against the raster's own extent
   - automatic reprojection of non-geographic input rasters to EPSG:4326,
     which calculate_tilt's geodetic math requires (see api/crs.py)
   - job-scoped temp storage that's cleaned up after the response is sent
@@ -55,9 +53,7 @@ from backend.uplift_surface import (  # noqa: E402
 )
 
 from api.crs import (  # noqa: E402
-    normalize_origin_to_wgs84,
     ensure_wgs84_raster,
-    parse_xy_pair,
     parse_decimal_degrees_hemisphere,
     get_raster_crs,
     get_raster_bounds_wgs84,
@@ -78,7 +74,6 @@ app = FastAPI(title="GIA Modeling Tool API")
 ALLOWED_EXTENSIONS = {".tif", ".tiff"}
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB; adjust to your real ceiling
 
-ORIGIN_MODES = {"match_raster", "decimal_degrees", "epsg"}
 ORIGIN_THRESHOLD_METERS = 500.0
 
 RUN_PARAMETERS_SCHEMA_VERSION = 1
@@ -185,22 +180,12 @@ async def process(
     background_tasks: BackgroundTasks,
     dem_file: UploadFile | None = File(None, description="Input DEM as a GeoTIFF (.tif/.tiff)"),
     file_path: str | None = Form(None, description="Server-side path to a GeoTIFF on the same pod filesystem"),
-    origin_mode: str = Form(
-        ...,
-        description="How origin_value is interpreted: 'match_raster', 'decimal_degrees', or 'epsg'",
-    ),
     origin_value: str = Form(
         ...,
         description=(
-            "Tilt origin coordinates, format depends on origin_mode: "
-            "'x,y' (floats, raster's own native CRS) for 'match_raster'; "
-            "'45.25N,110.55W' (hemisphere-annotated, order-agnostic) for 'decimal_degrees'; "
-            "'x,y' (floats, in origin_epsg's units) for 'epsg'."
+            "Tilt origin in decimal degrees, hemisphere-annotated and order-agnostic, "
+            "e.g. '45.25N,110.55W'."
         ),
-    ),
-    origin_epsg: str | None = Form(
-        None,
-        description="CRS of origin_value, e.g. 'EPSG:32612'. Required (and only used) when origin_mode == 'epsg'.",
     ),
     # Optional in the signature so a `vectors` model can omit them (each is
     # required by require_direction_inputs when it applies); Annotated, like
@@ -256,17 +241,6 @@ async def process(
             detail=f"Unsupported file type '{ext}'. Expected one of {sorted(ALLOWED_EXTENSIONS)}.",
         )
 
-    if origin_mode not in ORIGIN_MODES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"origin_mode must be one of {sorted(ORIGIN_MODES)}, got '{origin_mode}'.",
-        )
-    if origin_mode == "epsg" and not origin_epsg:
-        raise HTTPException(
-            status_code=422,
-            detail="origin_epsg is required when origin_mode is 'epsg'.",
-        )
-
     # --- Parse the optional uplift model and build it now, so a bad or
     # unbuildable model fails fast, before any upload is written. ---
     # A `vectors` model needs the raster's own geometry, so it is built further
@@ -283,18 +257,11 @@ async def process(
     except (TiltModelError, ValueError) as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    # --- Resolve whatever origin modes don't depend on the raster itself, up
-    # front, so malformed input fails fast before any upload happens.
-    # 'match_raster' needs the raster's own CRS and is resolved further down,
-    # once the file is on disk. ---
-    origin_lon = origin_lat = None
+    # --- Parse the origin up front, so malformed input fails fast before any
+    # upload happens. ---
     try:
-        if origin_mode == "decimal_degrees":
-            origin_lon, origin_lat = parse_decimal_degrees_hemisphere(origin_value)
-        elif origin_mode == "epsg":
-            x, y = parse_xy_pair(origin_value)
-            origin_lon, origin_lat = normalize_origin_to_wgs84(x, y, origin_epsg)
-    except (InvalidCRSError, InvalidOriginError) as e:
+        origin_lon, origin_lat = parse_decimal_degrees_hemisphere(origin_value)
+    except InvalidOriginError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
     job_dir = create_job_workspace()
@@ -323,16 +290,9 @@ async def process(
             )
         input_path = file_path
 
-    # --- Resolve 'match_raster' against the raster's own native CRS (only
-    # known now that the file is on disk), then run the geodesic plausibility
-    # check -- common to all three modes -- before the expensive reprojection
-    # /processing work below. ---
+    # --- Geodesic plausibility check (the guard against a CRS mix-up) before
+    # the expensive reprojection/processing work below. ---
     try:
-        if origin_mode == "match_raster":
-            x, y = parse_xy_pair(origin_value)
-            native_crs = get_raster_crs(input_path)
-            origin_lon, origin_lat = normalize_origin_to_wgs84(x, y, native_crs)
-
         raster_bounds_wgs84 = get_raster_bounds_wgs84(input_path)
         check_origin_within_threshold(
             origin_lon, origin_lat, raster_bounds_wgs84, threshold_meters=ORIGIN_THRESHOLD_METERS
@@ -674,47 +634,16 @@ async def raster_preview(
 
 
 class ResolvePointRequest(BaseModel):
-    origin_mode: str
     origin_value: str
-    origin_epsg: str | None = None
-    native_crs: str | None = None
 
 
 @app.post("/api/resolve-point")
 async def resolve_point(body: ResolvePointRequest):
     # --- Cheap coordinate resolution, no file I/O: wraps the same parsing
-    # functions /api/process uses for the two origin modes that don't
-    # depend on the raster itself. 'match_raster' is also supported here
-    # (unlike at the top of /api/process, where it's deferred until the
-    # file is on disk) because the client already has the raster's CRS
-    # cached from /api/preflight's response -- no raster re-read needed for
-    # a live map preview on every coordinate-field blur. ---
-    if body.origin_mode not in ORIGIN_MODES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"origin_mode must be one of {sorted(ORIGIN_MODES)}, got '{body.origin_mode}'.",
-        )
-
+    # /api/process uses, for a live map preview on every coordinate-field blur. ---
     try:
-        if body.origin_mode == "decimal_degrees":
-            lon, lat = parse_decimal_degrees_hemisphere(body.origin_value)
-        elif body.origin_mode == "epsg":
-            if not body.origin_epsg:
-                raise HTTPException(
-                    status_code=422,
-                    detail="origin_epsg is required when origin_mode is 'epsg'.",
-                )
-            x, y = parse_xy_pair(body.origin_value)
-            lon, lat = normalize_origin_to_wgs84(x, y, body.origin_epsg)
-        else:  # match_raster
-            if not body.native_crs:
-                raise HTTPException(
-                    status_code=422,
-                    detail="native_crs is required when origin_mode is 'match_raster'.",
-                )
-            x, y = parse_xy_pair(body.origin_value)
-            lon, lat = normalize_origin_to_wgs84(x, y, body.native_crs)
-    except (InvalidCRSError, InvalidOriginError) as e:
+        lon, lat = parse_decimal_degrees_hemisphere(body.origin_value)
+    except InvalidOriginError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
     return {"lon": lon, "lat": lat}
@@ -724,22 +653,12 @@ async def resolve_point(body: ResolvePointRequest):
 async def origin_elevation(
     dem_file: UploadFile | None = File(None, description="Input DEM as a GeoTIFF (.tif/.tiff)"),
     file_path: str | None = Form(None, description="Server-side path to a GeoTIFF on the same pod filesystem"),
-    origin_mode: str = Form(
-        ...,
-        description="How origin_value is interpreted: 'match_raster', 'decimal_degrees', or 'epsg'",
-    ),
     origin_value: str = Form(
         ...,
         description=(
-            "Tilt origin coordinates, format depends on origin_mode: "
-            "'x,y' (floats, raster's own native CRS) for 'match_raster'; "
-            "'45.25N,110.55W' (hemisphere-annotated, order-agnostic) for 'decimal_degrees'; "
-            "'x,y' (floats, in origin_epsg's units) for 'epsg'."
+            "Tilt origin in decimal degrees, hemisphere-annotated and order-agnostic, "
+            "e.g. '45.25N,110.55W'."
         ),
-    ),
-    origin_epsg: str | None = Form(
-        None,
-        description="CRS of origin_value, e.g. 'EPSG:32612'. Required (and only used) when origin_mode == 'epsg'.",
     ),
 ):
     # --- Preview-only: reports the DEM's own elevation at the resolved
@@ -761,25 +680,9 @@ async def origin_elevation(
             detail=f"Unsupported file type '{ext}'. Expected one of {sorted(ALLOWED_EXTENSIONS)}.",
         )
 
-    if origin_mode not in ORIGIN_MODES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"origin_mode must be one of {sorted(ORIGIN_MODES)}, got '{origin_mode}'.",
-        )
-    if origin_mode == "epsg" and not origin_epsg:
-        raise HTTPException(
-            status_code=422,
-            detail="origin_epsg is required when origin_mode is 'epsg'.",
-        )
-
-    origin_lon = origin_lat = None
     try:
-        if origin_mode == "decimal_degrees":
-            origin_lon, origin_lat = parse_decimal_degrees_hemisphere(origin_value)
-        elif origin_mode == "epsg":
-            x, y = parse_xy_pair(origin_value)
-            origin_lon, origin_lat = normalize_origin_to_wgs84(x, y, origin_epsg)
-    except (InvalidCRSError, InvalidOriginError) as e:
+        origin_lon, origin_lat = parse_decimal_degrees_hemisphere(origin_value)
+    except InvalidOriginError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
     with job_workspace() as job_dir:
@@ -806,17 +709,11 @@ async def origin_elevation(
                 )
             input_path = file_path
 
-        # --- Resolve 'match_raster' against the raster's own native CRS, then
-        # reproject to EPSG:4326 -- same working raster /api/process would
+        # --- Reproject to EPSG:4326 -- same working raster /api/process would
         # actually tilt -- before sampling, per the "which raster to sample
         # against" subtlety: consistency with the real pipeline matters more
         # than avoiding the reprojection cost here. ---
         try:
-            if origin_mode == "match_raster":
-                x, y = parse_xy_pair(origin_value)
-                native_crs = get_raster_crs(input_path)
-                origin_lon, origin_lat = normalize_origin_to_wgs84(x, y, native_crs)
-
             reprojected_path = os.path.join(job_dir, "input_wgs84.tif")
             prep = ensure_wgs84_raster(input_path, reprojected_path)
         except (InvalidCRSError, InvalidOriginError) as e:

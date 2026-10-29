@@ -86,7 +86,7 @@ describe('direction source', () => {
     const user = userEvent.setup()
     renderBody()
     withPoints(9)
-    await user.click(screen.getByRole('button', { name: 'Single azimuth' }))
+    await user.click(screen.getByRole('button', { name: 'Uplift direction' }))
     expect(screen.getByLabelText('Single azimuth')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Shore points' }))
     expect(screen.getByText('9 points')).toBeInTheDocument()

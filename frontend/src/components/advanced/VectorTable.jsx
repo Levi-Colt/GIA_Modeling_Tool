@@ -1,9 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { useProcessing } from '../../context/ProcessingContext.jsx'
-import CsvImport from './CsvImport.jsx'
 import { Help, NumberField, Segmented } from './fields.jsx'
 import { CURVATURE_INPUTS, curvatureForm } from '../../utils/tiltModel.js'
-import { CUSTOM_FAMILIES, MAX_VECTORS, isCustom, newVector, parseVector } from '../../utils/vectors.js'
+import { CUSTOM_FAMILIES, isCustom, parseVector } from '../../utils/vectors.js'
 
 // Help text is generic and unit-only (the tool is location-agnostic).
 const LOCAL_GRADIENT_HELP =
@@ -15,7 +14,7 @@ export const FIT_WARN_DEG = 15
 
 const cellInput = 'w-full min-w-[4.5rem] px-1 py-0.5 text-sm'
 
-function TextCell({ id, label, value, onChange, placeholder, invalid }) {
+function TextCell({ id, label, value, onChange, placeholder, invalid, required = false }) {
   return (
     <input
       id={id}
@@ -26,7 +25,9 @@ function TextCell({ id, label, value, onChange, placeholder, invalid }) {
       placeholder={placeholder}
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className={`${cellInput} ${invalid ? 'border-red-400' : ''}`}
+      className={`${cellInput} ${
+        invalid ? 'border-red-400' : required && value.trim() === '' ? 'border-blue-400' : ''
+      }`}
     />
   )
 }
@@ -41,7 +42,7 @@ function CustomRow({ vector, n, onPatch }) {
         <div className="space-y-2 border-l-2 border-gray-300 pl-3">
           <div className="text-xs font-medium text-gray-600">Custom tilt for vector {n}</div>
           <div className="grid grid-cols-2 gap-2">
-            <label className="block text-xs text-gray-500">
+            <label className="block text-xs font-medium text-gray-700">
               Family
               <select
                 value={c.family}
@@ -59,6 +60,7 @@ function CustomRow({ vector, n, onPatch }) {
             <NumberField
               label={`Vector ${n} local gradient (m/km)`}
               placeholder="m/km"
+              required
               value={c.localGradient}
               onChange={(localGradient) => setCustom({ localGradient })}
             />
@@ -77,6 +79,7 @@ function CustomRow({ vector, n, onPatch }) {
                   <NumberField
                     label={`Vector ${n} second gradient (m/km)`}
                     placeholder="m/km"
+                    required
                     value={c.secondGradient}
                     onChange={(secondGradient) => setCustom({ secondGradient })}
                   />
@@ -84,6 +87,7 @@ function CustomRow({ vector, n, onPatch }) {
                     label={`Vector ${n} distance (km) up the uplift direction from this vector`}
                     placeholder="km"
                     positive
+                    required
                     value={c.secondGradientDistanceKm}
                     onChange={(secondGradientDistanceKm) => setCustom({ secondGradientDistanceKm })}
                   />
@@ -92,6 +96,7 @@ function CustomRow({ vector, n, onPatch }) {
                 <NumberField
                   label={`Vector ${n} rate of increase (m/km per km)`}
                   placeholder="m/km per km"
+                  required
                   value={c.rateOfIncrease}
                   onChange={(rateOfIncrease) => setCustom({ rateOfIncrease })}
                 />
@@ -105,8 +110,10 @@ function CustomRow({ vector, n, onPatch }) {
 }
 
 // The vectors table (artboard B): #, Lat, Lon, Azim °, Range km, Tilt, Fit °,
-// remove. Selecting a row (focus or click) selects its arrow on the map, and
-// vice versa. The table is the precise, accessible path; the map is the quick one.
+// remove. Vectors are always *drawn on the map* (rows are created only by the map);
+// the table is where their start point, azimuth and range are then adjusted
+// precisely. Selecting a row (focus or click) selects its arrow on the map, and
+// vice versa.
 export default function VectorTable() {
   const {
     formState,
@@ -117,7 +124,6 @@ export default function VectorTable() {
     setMapEditMode,
     updateForm
   } = useProcessing()
-  const [importOpen, setImportOpen] = useState(false)
   const vectors = formState.advanced.vectors
   const selectedId = formState.selectedVectorId
   const adding = formState.mapEditMode === 'addVector'
@@ -141,23 +147,9 @@ export default function VectorTable() {
   const patch = (id, fields) =>
     setVectors((list) => list.map((v) => (v.id === id ? { ...v, ...fields } : v)))
 
-  function addRow() {
-    const v = newVector()
-    setVectors((list) => [...list, v], { undoable: true })
-    selectVector(v.id)
-  }
-
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={addRow}
-          disabled={vectors.length >= MAX_VECTORS}
-          className="rounded-md border border-gray-300 px-2 py-1 text-xs disabled:opacity-50"
-        >
-          + Add row
-        </button>
         <button
           type="button"
           aria-pressed={adding}
@@ -166,7 +158,7 @@ export default function VectorTable() {
             adding ? 'border-gray-900 bg-gray-900 text-white' : 'border-gray-300'
           }`}
         >
-          Add on map
+          Draw vector
         </button>
         <button
           type="button"
@@ -176,26 +168,17 @@ export default function VectorTable() {
         >
           Undo
         </button>
-        <button
-          type="button"
-          aria-expanded={importOpen}
-          onClick={() => setImportOpen((open) => !open)}
-          className="rounded-md border border-gray-300 px-2 py-1 text-xs"
-        >
-          Import CSV
-        </button>
       </div>
       {adding && (
         <Help>
-          Drag on the map to place a vector (the drag sets its direction and range); click to place one and enter its
-          azimuth here. Press Escape or Done to stop.
+          Drag on the map to draw a vector (the drag sets its start point, direction and range); a click places just the
+          start point, and you enter its azimuth here. Press Escape or Done to stop.
         </Help>
       )}
-      {importOpen && <CsvImport onClose={() => setImportOpen(false)} />}
 
       {vectors.length === 0 ? (
-        <p className="rounded-md border border-dashed border-gray-300 px-3 py-4 text-center text-xs text-gray-500">
-          No vectors yet. Add a row, drag on the map, or import a CSV.
+        <p className="rounded-md bg-gray-50 px-3 py-4 text-center text-xs text-gray-500">
+          No vectors yet. Use Draw vector, then drag on the map from where the vector starts, in its uplift direction.
         </p>
       ) : (
         <div className="overflow-x-auto">
@@ -235,6 +218,7 @@ export default function VectorTable() {
                     <td className="px-1 py-1">
                       <TextCell
                         id={`vector-${v.id}-lat`}
+                        required
                         label={`Vector ${n} latitude`}
                         placeholder="deg"
                         value={v.lat}
@@ -245,6 +229,7 @@ export default function VectorTable() {
                     <td className="px-1 py-1">
                       <TextCell
                         id={`vector-${v.id}-lon`}
+                        required
                         label={`Vector ${n} longitude`}
                         placeholder="deg"
                         value={v.lon}
@@ -255,6 +240,7 @@ export default function VectorTable() {
                     <td className="px-1 py-1">
                       <TextCell
                         id={`vector-${v.id}-azimuth`}
+                        required
                         label={`Vector ${n} azimuth`}
                         placeholder="deg"
                         value={v.azimuthDeg}

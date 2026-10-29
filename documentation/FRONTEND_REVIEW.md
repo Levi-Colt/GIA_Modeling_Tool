@@ -19,7 +19,7 @@ spec doc — note which one) `dropped` (considered, not doing it).
 
 ### 1. DEM raster should be opaque by default
 
-- **Status:** decided
+- **Status:** done (`RASTER_OPACITY = 1`)
 - **Where:** `frontend/src/components/map/MapPanel.jsx` (`RASTER_OPACITY` constant, line ~14)
 - **Issue:** A single `RASTER_OPACITY = 0.6` applies to both the input-preview
   raster and the tilted-result raster. Users can't clearly see the DEM change
@@ -31,7 +31,7 @@ spec doc — note which one) `dropped` (considered, not doing it).
 
 ### 2. Per-field validated/invalid visual indicators, consistently applied
 
-- **Status:** open
+- **Status:** done (`components/shared/Field.jsx`: default / required / valid / invalid, plus a checking spinner)
 - **Where:** `UploadStep.jsx` (has one), `CoordinateSteps.jsx`,
   `TiltAndProductsSteps.jsx`, `advanced/fields.jsx::NumberField`
 - **Issue:** The green border on a successfully-preflighted DEM
@@ -48,7 +48,7 @@ spec doc — note which one) `dropped` (considered, not doing it).
 
 ### 3. No shared input/label/help typography — build one field primitive
 
-- **Status:** open
+- **Status:** done (base control style in `index.css` + `Field`; every form field uses it)
 - **Where:** Every step/section file rolls its own markup: `CoordinateSteps.jsx`,
   `TiltAndProductsSteps.jsx`, `advanced/fields.jsx::NumberField`,
   `UploadStep.jsx`'s typed-path input
@@ -80,7 +80,7 @@ spec doc — note which one) `dropped` (considered, not doing it).
 
 ### 4. No feedback while origin is resolving
 
-- **Status:** open
+- **Status:** done (status and message on the origin field itself)
 - **Where:** `CoordinateSteps.jsx` (`handleBlur` → `checkElevation()` +
   `checkResolvedOrigin()`)
 - **Issue:** Two async calls fire on blur after entering a coordinate.
@@ -97,7 +97,7 @@ spec doc — note which one) `dropped` (considered, not doing it).
 
 ### 5. Click-to-place origin on the map, then edit values
 
-- **Status:** open
+- **Status:** done (`Pick on map`; `MapPanel`'s `originPicking` prop)
 - **Where:** `MapPanel.jsx`'s `editing` prop (currently vectors-only),
   `App.jsx` (wires `editing` in), `VectorTable.jsx` ("Add on map" button)
 - **Issue/request:** Origin currently has no map-click input path — only
@@ -113,7 +113,7 @@ spec doc — note which one) `dropped` (considered, not doing it).
 
 ### 6. Drop `match_raster` / `epsg` origin modes — decimal degrees only
 
-- **Status:** decided
+- **Status:** done end to end: frontend, API, backend helpers, tests and docs
 - **Where:** Frontend: `CoordinateSteps.jsx` (`MODE_CONFIG`, `CoordinateModeStep`
   mode `<select>`), `ProcessingContext.jsx`/`utils/readiness.js` (`originMode`,
   `originEpsg`). API/backend: `api/crs.py` (`normalize_origin_to_wgs84`,
@@ -141,7 +141,7 @@ spec doc — note which one) `dropped` (considered, not doing it).
 
 ### 7. Global Profile section: visual clutter + misleading empty-state box
 
-- **Status:** open
+- **Status:** done (labels/help via `Field`; placeholders no longer dashed)
 - **Where:** `advanced/TiltModelBody.jsx` (Global Profile fields), `advanced/ProfileChart.jsx`
 - **Issue:** Mostly a concentrated instance of item 3 (no shared field
   primitive) plus a specific bad pattern:
@@ -167,7 +167,7 @@ spec doc — note which one) `dropped` (considered, not doing it).
 
 ### 8. Replace text-based "what's missing" with per-field color states; reduce footer text
 
-- **Status:** decided
+- **Status:** done (blue required state; footer reduced to one line)
 - **Where:** `App.jsx` (footer "Still needed: {missingText.join(', ')}",
   line ~261), `utils/readiness.js`, plus every field this would touch
 - **Issue/request:** The current "what do I still need to fill in" signal is

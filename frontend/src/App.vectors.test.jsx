@@ -54,6 +54,27 @@ beforeEach(() => {
   upliftPreview.mockResolvedValue({ isobases: { type: 'FeatureCollection', features: [] }, vectors: [], warnings: [] })
 })
 
+describe('App: multiple directions is opt-in', () => {
+  it('a single azimuth is the default: no vector editing on the map until the box is checked', async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ mode: 'advanced' }))
+    render(<App />)
+    const user = userEvent.setup()
+    expect(mapProps.editing).toBeUndefined()
+
+    await user.click(screen.getByRole('checkbox', { name: 'Use multiple directions' }))
+    expect(mapProps.editing).toMatchObject({ mode: 'addVector' })
+
+    // Draw one: the drag sets start point, azimuth and range; the table shows them.
+    act(() => mapProps.editing.onAddVector({ lon: -104, lat: 45, azimuthDeg: 30, rangeKm: 80 }))
+    expect(screen.getByLabelText('Vector 1 latitude')).toHaveValue('45.00000')
+    expect(screen.getByLabelText('Vector 1 azimuth')).toHaveValue('30.0')
+    expect(screen.getByLabelText('Vector 1 range (km)')).toHaveValue('80.0')
+
+    await user.click(screen.getByRole('checkbox', { name: 'Use multiple directions' }))
+    expect(mapProps.editing).toBeUndefined()
+  })
+})
+
 describe('App in vectors mode', () => {
   it('hands the map an editing contract and no azimuth line; the compass rose has no single azimuth', async () => {
     bootVectors({ tiltAzimuth: '45' })
@@ -139,14 +160,14 @@ describe('App in vectors mode', () => {
     expect(document.getElementById(`vector-row-${b}`)).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('Add on map arms the map, and the map\'s Done/Escape callback disarms it', async () => {
+  it('Draw vector arms the map, and the map\'s Done/Escape callback disarms it', async () => {
     const user = userEvent.setup()
     bootVectors()
-    await user.click(screen.getByRole('button', { name: 'Add on map' }))
+    await user.click(screen.getByRole('button', { name: 'Draw vector' }))
     expect(mapProps.editing.mode).toBe('addVector')
     act(() => mapProps.editing.onExitAddMode())
     expect(mapProps.editing.mode).toBe('none')
-    expect(screen.getByRole('button', { name: 'Add on map' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: 'Draw vector' })).toHaveAttribute('aria-pressed', 'false')
   })
 
   it('the selection, edit mode and preview are not persisted; the vectors are', async () => {
@@ -180,10 +201,10 @@ describe('App in the other modes', () => {
     expect(mapProps.azimuthDeg).toBe('45')
   })
 
-  it('switching to Basic disarms an armed Add on map', async () => {
+  it('switching to Basic disarms an armed Draw vector', async () => {
     const user = userEvent.setup()
     bootVectors()
-    await user.click(screen.getByRole('button', { name: 'Add on map' }))
+    await user.click(screen.getByRole('button', { name: 'Draw vector' }))
     await user.click(screen.getByRole('button', { name: 'Basic' }))
     await user.click(screen.getByRole('button', { name: 'Advanced' }))
     expect(mapProps.editing.mode).toBe('none')

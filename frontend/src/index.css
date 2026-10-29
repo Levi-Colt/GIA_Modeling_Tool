@@ -8,3 +8,21 @@
   max-width: none !important;
   max-height: none !important;
 }
+
+/* One look for every form control (FRONTEND_REVIEW item 3): visible border and
+   padding, readable near-black text. Utilities (status borders, compact table
+   cells) still override these because they sit in a later layer. */
+@layer base {
+  input:not([type='checkbox']):not([type='radio']):not([type='file']),
+  select {
+    @apply rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 placeholder:text-gray-400;
+  }
+  input:not([type='checkbox']):not([type='radio']):not([type='file']):focus,
+  select:focus {
+    @apply outline-none ring-2 ring-blue-200;
+  }
+  input:disabled,
+  select:disabled {
+    @apply bg-gray-100 text-gray-700;
+  }
+}

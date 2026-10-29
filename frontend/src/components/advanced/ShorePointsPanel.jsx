@@ -90,7 +90,7 @@ function FitStatus({ fit, current }) {
   const data = fit?.data ?? null
   if (!data) {
     return (
-      <p className="rounded-md border border-dashed border-gray-300 px-3 py-4 text-center text-xs text-gray-500">
+      <p className="rounded-md bg-gray-50 px-3 py-4 text-center text-xs text-gray-500">
         {fit?.status === 'error'
           ? fit.error
           : fit?.status === 'loading'

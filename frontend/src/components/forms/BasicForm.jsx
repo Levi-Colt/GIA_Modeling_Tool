@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import UploadStep from '../steps/UploadStep.jsx'
-import { CoordinateModeStep, CoordinatesStep } from '../steps/CoordinateSteps.jsx'
+import { CoordinatesStep } from '../steps/CoordinateSteps.jsx'
 import { TargetElevationField, TiltInputs, ProductsStep } from '../steps/TiltAndProductsSteps.jsx'
 import { scrollToStep } from '../../utils/steps.js'
 
@@ -36,7 +36,6 @@ export default function BasicForm({ focusRequest }) {
 
       <Section id="step-coordinates" number="2" title="Origin (spillway)">
         <div className="space-y-2">
-          <CoordinateModeStep />
           <CoordinatesStep />
           <TargetElevationField />
         </div>

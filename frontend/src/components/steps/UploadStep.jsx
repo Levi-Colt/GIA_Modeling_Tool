@@ -84,13 +84,15 @@ export default function UploadStep() {
         <div
           onDrop={handleDrop}
           onDragOver={(e) => e.preventDefault()}
-          className="rounded-md border border-dashed border-gray-300 p-6 text-center"
+          className={`rounded-md border border-dashed p-6 text-center ${
+            preflightStatus === 'invalid' ? 'border-red-400' : 'border-blue-400'
+          }`}
         >
-          <p className="mb-2 text-sm text-gray-500">Drag a GeoTIFF here, or</p>
+          <p className="mb-2 text-sm text-gray-600">Drag a GeoTIFF here, or</p>
           <input
             type="text"
             placeholder="/path/to/dem.tif"
-            className="w-56"
+            className="w-56 border-blue-400"
             onBlur={handlePathBlur}
             onKeyDown={(e) => e.key === 'Enter' && handlePathBlur(e)}
           />

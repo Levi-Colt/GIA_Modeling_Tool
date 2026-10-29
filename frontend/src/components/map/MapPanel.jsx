@@ -10,8 +10,9 @@ import { isobaseLabel } from '../../utils/vectors.js'
 import { elevationLabel } from '../../utils/shorePoints.js'
 import { RESIDUAL_GRADIENT, RESIDUAL_UNKNOWN, residualColor, residualExtent } from '../../utils/colors.js'
 
-// DEM preview opacity: low enough that the basemap reads through it.
-const RASTER_OPACITY = 0.6
+// DEM preview opacity: fully opaque so a tilt's effect is easy to see (the basemap
+// still shows around the DEM's extent).
+const RASTER_OPACITY = 1
 
 // Overlay stacking, bottom to top, per the map contract: raster (tilePane, 200)
 // -> selection radius -> data hull -> isobases -> contour -> vectors -> shore
@@ -63,6 +64,10 @@ const signed = (r) => `${r > 0 ? '+' : r < 0 ? '−' : ''}${Math.abs(r).toFixed(
 //     onSelectVector(id),
 //     onExitAddMode()
 //   }
+// Optional `originPicking` prop (form view only): { active, onPick({ lon, lat }), onExit() }.
+// While active a map click reports its lon/lat once (the form turns it into the
+// origin) and Escape exits; it is independent of `editing` (only one of the two is
+// ever armed, since both read the form's single map-edit mode).
 // MapPanel still does no geoprocessing: it renders what it is given and reports
 // geometry edits through these callbacks, once, on drag end. Bearing/distance
 // math is utils/geometry.js's; the gestures live in VectorLayer.js.
@@ -86,7 +91,7 @@ const signed = (r) => `${r > 0 ? '+' : r < 0 ? '−' : ''}${Math.abs(r).toFixed(
 //
 // Each layer group has its own effect keyed on that field's identity, so the
 // caller should keep unchanged fields referentially stable (App.jsx memoizes).
-export default function MapPanel({ mapData, azimuthDeg, editing }) {
+export default function MapPanel({ mapData, azimuthDeg, editing, originPicking }) {
   const containerRef = useRef(null)
   const mapRef = useRef(null)
   const layersRef = useRef({})
@@ -422,6 +427,29 @@ export default function MapPanel({ mapData, azimuthDeg, editing }) {
     }
   }, [shorePoints, residualMax])
 
+  // Click-to-place origin. The callbacks go through a ref so a re-render never
+  // re-binds the handlers mid-gesture.
+  const picking = !!originPicking?.active
+  const originPickRef = useRef(originPicking)
+  originPickRef.current = originPicking
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !picking) return undefined
+    const el = map.getContainer()
+    el.style.cursor = 'crosshair'
+    const onClick = (e) => originPickRef.current?.onPick?.({ lon: e.latlng.lng, lat: e.latlng.lat })
+    const onKey = (e) => {
+      if (e.key === 'Escape') originPickRef.current?.onExit?.()
+    }
+    map.on('click', onClick)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      map.off('click', onClick)
+      document.removeEventListener('keydown', onKey)
+      el.style.cursor = ''
+    }
+  }, [picking])
+
   const azimuthLine = mapData?.azimuthLine
   useEffect(() => {
     const map = mapRef.current
@@ -520,13 +548,25 @@ export default function MapPanel({ mapData, azimuthDeg, editing }) {
       )}
       {editing?.mode === 'addVector' && (
         <div className="absolute left-1/2 top-3 z-[1000] flex -translate-x-1/2 items-center gap-2 rounded-md bg-white/95 px-3 py-1.5 text-xs shadow">
-          <span className="text-gray-600">Drag to place a vector; click to place one without a direction.</span>
+          <span className="text-gray-600">Drag to draw a vector (start point, direction and range); a click places just the start point.</span>
           <button
             type="button"
             onClick={() => editing.onExitAddMode?.()}
             className="rounded-md bg-gray-900 px-2 py-1 text-white"
           >
             Done
+          </button>
+        </div>
+      )}
+      {picking && (
+        <div className="absolute left-1/2 top-3 z-[1000] flex -translate-x-1/2 items-center gap-2 rounded-md bg-white/95 px-3 py-1.5 text-xs shadow">
+          <span className="text-gray-600">Click the map to set the spillway origin.</span>
+          <button
+            type="button"
+            onClick={() => originPicking.onExit?.()}
+            className="rounded-md bg-gray-900 px-2 py-1 text-white"
+          >
+            Cancel
           </button>
         </div>
       )}

@@ -59,8 +59,7 @@ def _run(file_path, tilt_model, tilt_factor=None, tilt_azimuth=None, target=450)
     async def _call():
         background_tasks = BackgroundTasks()
         response = await process(
-            background_tasks=background_tasks, dem_file=None, file_path=file_path,
-            origin_mode="decimal_degrees", origin_value="44.945N,104.945W", origin_epsg=None,
+            background_tasks=background_tasks, dem_file=None, file_path=file_path, origin_value="44.945N,104.945W",
             tilt_azimuth=tilt_azimuth, tilt_factor=tilt_factor, target_elevation=target,
             include_dem=False, selection_radius_km=None, tilt_model=raw,
         )

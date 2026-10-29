@@ -1,4 +1,7 @@
 import { useProcessing } from '../../context/ProcessingContext.jsx'
+import Field, { statusBorder, valueStatus } from '../shared/Field.jsx'
+import { parseFiniteNumber } from '../../utils/numbers.js'
+import { parseSelectionRadiusKm } from '../../utils/readiness.js'
 
 // Target elevation is DEM-authoritative server-side (see
 // TARGET_ELEVATION_AND_GPKG_TASKS.md): when the origin lands on valid DEM
@@ -7,106 +10,96 @@ import { useProcessing } from '../../context/ProcessingContext.jsx'
 // field goes disabled, or as a silent no-op when a typed value gets
 // discarded server-side.
 export function TargetElevationField() {
-  return (
-    <div>
-      <TargetElevationInput />
-      <p className="mt-1 text-xs text-gray-500">
-        Strandlines are extracted at the spillway's present elevation, assuming the sill hasn't changed
-        since the shoreline formed.
-      </p>
-    </div>
-  )
-}
-
-function TargetElevationInput() {
   const { formState, updateForm } = useProcessing()
   const { elevationCheckStatus, elevationCheckValue, targetElevation } = formState
 
+  // The label is always shown, including in the disabled/derived states.
+  let status = valueStatus(targetElevation, { required: true })
+  let message = null
+  let input
   if (elevationCheckStatus === 'checking') {
-    return (
-      <div>
-        <input type="number" placeholder="Target elev. (m)" value={targetElevation} disabled className="w-full" />
-        <p className="mt-1 text-xs text-gray-500">Checking DEM elevation at origin...</p>
-      </div>
-    )
-  }
-
-  if (elevationCheckStatus === 'dem') {
-    return (
-      <div>
-        <input type="number" value={elevationCheckValue} disabled className="w-full" />
-        <p className="mt-1 text-xs text-gray-500">{elevationCheckValue} m — from DEM at origin</p>
-      </div>
-    )
-  }
-
-  if (elevationCheckStatus === 'outside_bounds' || elevationCheckStatus === 'nodata') {
-    const note =
-      elevationCheckStatus === 'outside_bounds'
-        ? 'Origin falls outside the DEM — enter a target elevation manually.'
-        : 'No elevation data at the origin cell — enter a target elevation manually.'
-    return (
-      <div>
-        <p className="mb-1 text-xs text-gray-500">{note}</p>
-        <input
-          type="number"
-          placeholder="Target elev. (m)"
-          value={targetElevation}
-          onChange={(e) => updateForm({ targetElevation: e.target.value })}
-          className="w-full"
-        />
-      </div>
+    status = 'checking'
+    message = 'Checking DEM elevation at origin...'
+    input = <input type="number" placeholder="Target elev. (m)" value={targetElevation} disabled className="w-full" />
+  } else if (elevationCheckStatus === 'dem') {
+    status = 'valid'
+    message = `${elevationCheckValue} m — from DEM at origin`
+    input = <input type="number" value={elevationCheckValue} disabled className={`w-full ${statusBorder(status)}`} />
+  } else {
+    if (elevationCheckStatus === 'outside_bounds') {
+      message = 'Origin falls outside the DEM — enter a target elevation manually.'
+    }
+    if (elevationCheckStatus === 'nodata') {
+      message = 'No elevation data at the origin cell — enter a target elevation manually.'
+    }
+    input = (
+      <input
+        type="number"
+        placeholder="Target elev. (m)"
+        value={targetElevation}
+        onChange={(e) => updateForm({ targetElevation: e.target.value })}
+        className={`w-full ${statusBorder(status)}`}
+      />
     )
   }
 
   return (
-    <input
-      type="number"
-      placeholder="Target elev. (m)"
-      value={targetElevation}
-      onChange={(e) => updateForm({ targetElevation: e.target.value })}
-      className="w-full"
-    />
+    <Field
+      label="Target elevation (m)"
+      status={status}
+      message={message}
+      help="Strandlines are extracted at the spillway's present elevation, assuming the sill hasn't changed since the shoreline formed."
+    >
+      {input}
+    </Field>
   )
 }
 
 // Azimuth and tilt-factor inputs, shared by both modes. In Advanced these are
 // labelled "Single azimuth" / "Gradient at spillway (m/km)" -- the same two
 // top-level formState keys either way, so a value typed in one mode shows up
-// in the other. `showAzimuth={false}` (Advanced, vectors direction source) shows
+// in the other. `showAzimuth={false}` (Advanced, multiple directions) shows
 // only the gradient: there is no single azimuth then, but the value is kept.
+// `factorRequired={false}` (every vector has its own tilt) drops the blue outline.
 export function TiltInputs({
   azimuthLabel = 'Azimuth (deg)',
   factorLabel = 'Tilt (m/km)',
   factorHelp = null,
-  showAzimuth = true
+  showAzimuth = true,
+  factorRequired = true
 }) {
   const { formState, updateForm } = useProcessing()
+  const azimuthStatus = valueStatus(formState.tiltAzimuth, {
+    required: true,
+    ok: parseFiniteNumber(formState.tiltAzimuth) !== null
+  })
+  const factorStatus = valueStatus(formState.tiltFactor, {
+    required: factorRequired,
+    ok: parseFiniteNumber(formState.tiltFactor) !== null
+  })
   return (
     <div>
       <div className={showAzimuth ? 'grid grid-cols-2 gap-2' : undefined}>
         {showAzimuth && (
-          <label className="block text-xs text-gray-500">
-            {azimuthLabel}
+          <Field label={azimuthLabel} status={azimuthStatus}>
             <input
               type="number"
               placeholder="Azimuth (deg)"
               value={formState.tiltAzimuth}
               onChange={(e) => updateForm({ tiltAzimuth: e.target.value })}
-              className="mt-1 w-full"
+              className={`w-full ${statusBorder(azimuthStatus)}`}
             />
-          </label>
+          </Field>
         )}
-        <label className="block text-xs text-gray-500">
-          {factorLabel}
+        <Field label={factorLabel} status={factorStatus}>
           <input
             type="number"
             placeholder="Tilt (m/km)"
             value={formState.tiltFactor}
             onChange={(e) => updateForm({ tiltFactor: e.target.value })}
-            className="mt-1 w-full"
+            className={`w-full ${statusBorder(factorStatus)}`}
           />
-        </label>
+        </Field>
       </div>
       {factorHelp && <p className="mt-1 text-xs text-gray-500">{factorHelp}</p>}
     </div>
@@ -116,24 +109,26 @@ export function TiltInputs({
 // Output-section body (selection radius + include-DEM), shared by both modes.
 export function ProductsStep() {
   const { formState, updateForm } = useProcessing()
+  const radius = formState.selectionRadiusKm
+  const radiusStatus = valueStatus(radius, { ok: parseSelectionRadiusKm(radius) !== null })
   return (
-    <div>
-      <label className="block text-sm text-gray-600">
-        Selection radius (km, optional)
+    <div className="space-y-3">
+      <Field
+        label="Selection radius (km, optional)"
+        status={radiusStatus}
+        help="Only contours that come within this distance of the origin are kept (whole, not clipped)."
+      >
         <input
           type="number"
           min="0"
           step="any"
           placeholder="No limit"
-          value={formState.selectionRadiusKm}
+          value={radius}
           onChange={(e) => updateForm({ selectionRadiusKm: e.target.value })}
-          className="mt-1 w-full"
+          className={`w-full ${statusBorder(radiusStatus)}`}
         />
-      </label>
-      <p className="mb-2 text-xs text-gray-500">
-        Only contours that come within this distance of the origin are kept (whole, not clipped).
-      </p>
-      <label className="flex items-center gap-2 text-sm text-gray-600">
+      </Field>
+      <label className="flex items-center gap-2 text-sm text-gray-700">
         <input
           type="checkbox"
           checked={formState.includeDem}

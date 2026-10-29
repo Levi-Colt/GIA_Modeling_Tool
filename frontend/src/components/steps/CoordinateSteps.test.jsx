@@ -67,7 +67,7 @@ describe('stale target-elevation after an unblurred coordinate edit', () => {
 
     renderHarness()
     const user = userEvent.setup()
-    const input = screen.getByPlaceholderText('45.25N,110.55W')
+    const input = screen.getByPlaceholderText('latitude, longitude')
 
     // Type a coordinate and blur -- the check resolves and auto-fills target elevation.
     await user.type(input, '45.25N,110.55W')
@@ -99,7 +99,7 @@ describe('stale target-elevation after an unblurred coordinate edit', () => {
 
     renderHarness()
     const user = userEvent.setup()
-    const input = screen.getByPlaceholderText('45.25N,110.55W')
+    const input = screen.getByPlaceholderText('latitude, longitude')
 
     await user.type(input, '45.25N,110.55W')
     await user.tab()

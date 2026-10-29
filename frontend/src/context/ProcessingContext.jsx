@@ -27,14 +27,14 @@ const defaultState = {
   // Parsed georaster object from /api/raster-preview (georeferenced WGS84
   // preview of the uploaded DEM) -- holds typed arrays, never persisted.
   rasterPreviewGeoraster: null,
-  originMode: 'decimal_degrees', // match_raster | decimal_degrees | epsg
+  // Decimal degrees only (FRONTEND_REVIEW item 6), typed or picked on the map.
   originValue: '',
-  originEpsg: '',
   // Preview-only state for the /api/resolve-point call, driven by the same
   // coordinate-field blur that drives elevationCheckStatus below (see
   // CoordinateSteps.jsx). Feeds the map's origin marker + azimuth line.
   resolveOriginStatus: 'idle', // idle | checking | resolved | error
   resolvedOrigin: null, // [lon, lat]
+  resolveOriginMessage: '', // the API's reason when status is 'error'
   tiltAzimuth: '',
   tiltFactor: '',
   targetElevation: '',
@@ -95,7 +95,7 @@ const defaultState = {
   // Vector-table / map interaction state, all transient (a reload never
   // restores a selection, an armed "Add on map", or a pending focus request).
   selectedVectorId: null,
-  mapEditMode: 'none', // 'none' | 'addVector'
+  mapEditMode: 'none', // 'none' | 'addVector' | 'setOrigin'
   vectorFocusRequest: null // { id, n }: focus that vector's azimuth input
 }
 
@@ -113,6 +113,7 @@ const TRANSIENT_KEYS = [
   'elevationCheckValue',
   'resolveOriginStatus',
   'resolvedOrigin',
+  'resolveOriginMessage',
   'profilePreview',
   'upliftPreview',
   'surfaceFit',
@@ -155,7 +156,12 @@ function loadCarriedForwardState() {
     advanced.vectors = normalizeVectors(advanced.vectors)
     advanced.shorePoints = normalizeShorePoints(advanced.shorePoints)
     advanced.directionSource = directionSourceOf(advanced)
-    return { ...defaultState, ...parsed, advanced }
+    // The native-CRS and EPSG origin modes are gone (decimal degrees only): a save
+    // made in one of them holds a value that no longer parses, so drop it and the
+    // stale mode keys.
+    const { originMode, originEpsg, ...rest } = parsed
+    if (originMode && originMode !== 'decimal_degrees') rest.originValue = ''
+    return { ...defaultState, ...rest, advanced }
   } catch {
     return defaultState
   }

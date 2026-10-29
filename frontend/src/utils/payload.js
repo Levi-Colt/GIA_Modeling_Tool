@@ -33,9 +33,7 @@ export function buildProcessPayload(formState) {
 function buildSharedPayload(formState) {
   return {
     ...(formState.demFile ? { dem_file: formState.demFile } : { file_path: formState.demPath }),
-    origin_mode: formState.originMode,
     origin_value: formState.originValue,
-    ...(formState.originMode === 'epsg' ? { origin_epsg: formState.originEpsg } : {}),
     tilt_azimuth: formState.tiltAzimuth,
     tilt_factor: formState.tiltFactor,
     target_elevation: formState.targetElevation,

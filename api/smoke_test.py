@@ -28,8 +28,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + "/..")
 from api.main import process  # noqa: E402
 
 
-# --- A small sloped DEM in a projected CRS (UTM 12N), so match_raster and
-# epsg modes both exercise real reprojection, not just a WGS84 passthrough.
+# --- A small sloped DEM in a projected CRS (UTM 12N), so the run exercises real
+# reprojection, not just a WGS84 passthrough.
 # Column values step 0..900 by 100, matching the pattern used by the app-level
 # test suite (tests/test_process_dem.py) -- target_elevation=450 is known to
 # fall inside that range, so contour extraction always succeeds. ---
@@ -43,9 +43,6 @@ CENTER_Y = TOP_LEFT_Y - PIXEL_METERS * GRID / 2
 
 _to_wgs84 = Transformer.from_crs(NATIVE_CRS, "EPSG:4326", always_xy=True)
 CENTER_LON, CENTER_LAT = _to_wgs84.transform(CENTER_X, CENTER_Y)
-
-_to_nad83_utm = Transformer.from_crs("EPSG:4326", "EPSG:26912", always_xy=True)
-CENTER_X_NAD83, CENTER_Y_NAD83 = _to_nad83_utm.transform(CENTER_LON, CENTER_LAT)
 
 
 def _build_dem_bytes() -> bytes:
@@ -70,7 +67,7 @@ COMMON_KWARGS = dict(tilt_azimuth=90, tilt_factor=0.0, target_elevation=450, inc
                      selection_radius_km=None)
 
 
-async def _run(origin_mode, origin_value, origin_epsg=None):
+async def _run(origin_value):
     """Invokes the /process route function directly, returns (status_code, detail_or_None)."""
     upload = UploadFile(file=io.BytesIO(DEM_BYTES), filename="dem.tif")
     background_tasks = BackgroundTasks()
@@ -79,9 +76,7 @@ async def _run(origin_mode, origin_value, origin_epsg=None):
             background_tasks=background_tasks,
             dem_file=upload,
             file_path=None,
-            origin_mode=origin_mode,
             origin_value=origin_value,
-            origin_epsg=origin_epsg,
             **COMMON_KWARGS,
         )
         if response.background:
@@ -102,35 +97,23 @@ def _hemisphere_value(lon, lat):
 async def main():
     cases = [
         (
-            "match_raster success",
-            dict(origin_mode="match_raster", origin_value=f"{CENTER_X},{CENTER_Y}"),
-            200,
-        ),
-        (
             "decimal_degrees success",
-            dict(origin_mode="decimal_degrees", origin_value=_hemisphere_value(CENTER_LON, CENTER_LAT)),
-            200,
-        ),
-        (
-            "epsg success",
-            dict(
-                origin_mode="epsg",
-                origin_value=f"{CENTER_X_NAD83},{CENTER_Y_NAD83}",
-                origin_epsg="EPSG:26912",
-            ),
+            dict(origin_value=_hemisphere_value(CENTER_LON, CENTER_LAT)),
             200,
         ),
         (
             "decimal_degrees >500m from raster rejected",
-            dict(
-                origin_mode="decimal_degrees",
-                origin_value=_hemisphere_value(CENTER_LON, CENTER_LAT + 0.02),
-            ),
+            dict(origin_value=_hemisphere_value(CENTER_LON, CENTER_LAT + 0.02)),
             422,
         ),
         (
             "malformed decimal_degrees (missing hemisphere letter) rejected",
-            dict(origin_mode="decimal_degrees", origin_value="45.250000,110.550000W"),
+            dict(origin_value="45.250000,110.550000W"),
+            422,
+        ),
+        (
+            "bare projected x,y pair rejected (native-CRS / EPSG origins were removed)",
+            dict(origin_value=f"{CENTER_X},{CENTER_Y}"),
             422,
         ),
     ]

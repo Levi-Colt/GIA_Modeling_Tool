@@ -3,7 +3,6 @@ import { getReadiness, isReadyToRun, parseSelectionRadiusKm } from './readiness.
 
 const completeForm = {
   preflightStatus: 'valid',
-  originMode: 'decimal_degrees',
   originValue: '40.0, -105.0',
   originEpsg: '',
   tiltAzimuth: '45',
@@ -24,9 +23,7 @@ describe('getReadiness', () => {
   it('lists every reason for an empty form', () => {
     const { ready, missingText: missing } = check({
       preflightStatus: 'idle',
-      originMode: 'epsg',
       originValue: '',
-      originEpsg: '',
       tiltAzimuth: '',
       tiltFactor: '',
       targetElevation: '',
@@ -37,7 +34,6 @@ describe('getReadiness', () => {
     expect(missing).toEqual([
       'a valid DEM',
       'origin coordinates',
-      'origin EPSG code',
       'tilt azimuth',
       'tilt factor',
       'target elevation',
@@ -52,8 +48,6 @@ describe('getReadiness', () => {
   it('reports each individual gap on its own', () => {
     expect(check({ ...completeForm, preflightStatus: 'invalid' }).missingText).toEqual(['a valid DEM'])
     expect(check({ ...completeForm, originValue: '' }).missingText).toEqual(['origin coordinates'])
-    expect(check({ ...completeForm, originMode: 'epsg' }).missingText).toEqual(['origin EPSG code'])
-    expect(check({ ...completeForm, originMode: 'epsg', originEpsg: '32612' }).ready).toBe(true)
     expect(check({ ...completeForm, tiltAzimuth: '' }).missingText).toEqual(['tilt azimuth'])
     expect(check({ ...completeForm, tiltFactor: '' }).missingText).toEqual(['tilt factor'])
     expect(check({ ...completeForm, targetElevation: '' }).missingText).toEqual(['target elevation'])
@@ -74,9 +68,7 @@ describe('getReadiness', () => {
   it('keys every reason to its form section', () => {
     const { missing } = check({
       preflightStatus: 'idle',
-      originMode: 'epsg',
       originValue: '',
-      originEpsg: '',
       tiltAzimuth: '',
       tiltFactor: '',
       targetElevation: '',
@@ -86,7 +78,6 @@ describe('getReadiness', () => {
     expect(missing).toEqual([
       { section: 'dem', text: 'a valid DEM' },
       { section: 'origin', text: 'origin coordinates' },
-      { section: 'origin', text: 'origin EPSG code' },
       { section: 'tilt', text: 'tilt azimuth' },
       { section: 'tilt', text: 'tilt factor' },
       { section: 'origin', text: 'target elevation' },

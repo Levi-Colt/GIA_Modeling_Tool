@@ -1,9 +1,8 @@
 import { useState } from 'react'
-import { useProcessing } from '../../context/ProcessingContext.jsx'
-import { applyImport, describeImport, parseVectorsCsv, MAX_VECTORS } from '../../utils/vectors.js'
+import { applyImport, describeImport } from '../../utils/vectors.js'
 
-// CSV import panel, configured by props so the vector table and the shore-point
-// panel share it. Rows that fail validation are skipped whole and reported, never
+// CSV import panel, configured by props (the shore-point panel is its one user;
+// vectors are drawn on the map and have no import). Rows that fail validation are skipped whole and reported, never
 // imported partially. When the list already has rows the user picks Replace or
 // Append with the two buttons below (not a browser confirm()); with none, the
 // import applies directly.
@@ -172,28 +171,5 @@ export function CsvImportPanel({ existing, limit, noun, listName = `${noun} list
         </div>
       )}
     </div>
-  )
-}
-
-// The vector table's import: lat, lon and azimuth columns (range, gradient and
-// rate optional), matched by header name.
-const parseVectors = (text) => {
-  const r = parseVectorsCsv(text)
-  return { ...r, items: r.vectors }
-}
-
-export default function CsvImport({ onClose }) {
-  const { formState, setVectors } = useProcessing()
-  return (
-    <CsvImportPanel
-      existing={formState.advanced.vectors}
-      limit={MAX_VECTORS}
-      noun="vectors"
-      listName="vector list"
-      help="Needs lat, lon and azimuth columns; range, gradient (makes the row a custom tilt) and rate (makes it quadratic) are optional."
-      parse={parseVectors}
-      commit={(list) => setVectors(list, { undoable: true })}
-      onClose={onClose}
-    />
   )
 }

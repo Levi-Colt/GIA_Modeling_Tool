@@ -1,28 +1,31 @@
+import Field, { statusBorder, valueStatus } from '../shared/Field.jsx'
 import { parseFiniteNumber, parsePositiveNumber } from '../../utils/tiltModel.js'
 
 // Small form controls shared by the tilt-model body and the vector table.
 
 // Text input with numeric validation, not type="number", which mangles
-// exponent notation in some browsers. Placeholders are units only.
-export function NumberField({ label, value, onChange, placeholder, positive = false }) {
+// exponent notation in some browsers. Placeholders are units only. `required`
+// fields show the blue "still needed" outline while empty.
+export function NumberField({ label, value, onChange, placeholder, positive = false, required = false }) {
   const parsed = positive ? parsePositiveNumber(value) : parseFiniteNumber(value)
-  const invalid = value.trim() !== '' && parsed === null
+  const status = valueStatus(value, { required, ok: parsed !== null })
+  const invalid = status === 'invalid'
   return (
-    <div>
-      <label className="block text-xs text-gray-500">
-        {label}
-        <input
-          type="text"
-          inputMode="decimal"
-          placeholder={placeholder}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          aria-invalid={invalid || undefined}
-          className={`mt-1 w-full ${invalid ? 'border-red-400' : ''}`}
-        />
-      </label>
-      {invalid && <p className="text-xs text-red-600">{positive ? 'Enter a number greater than 0.' : 'Enter a number.'}</p>}
-    </div>
+    <Field
+      label={label}
+      status={status}
+      message={invalid ? (positive ? 'Enter a number greater than 0.' : 'Enter a number.') : null}
+    >
+      <input
+        type="text"
+        inputMode="decimal"
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-invalid={invalid || undefined}
+        className={`w-full ${statusBorder(status)}`}
+      />
+    </Field>
   )
 }
 

@@ -40,15 +40,12 @@ export async function rasterPreview(file, path) {
   return res.arrayBuffer()
 }
 
-export async function resolvePoint(originMode, originValue, originEpsg, nativeCrs) {
+export async function resolvePoint(originValue) {
   const res = await fetch(`${API_BASE}resolve-point`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      origin_mode: originMode,
-      origin_value: originValue,
-      origin_epsg: originEpsg || null,
-      native_crs: nativeCrs || null
+      origin_value: originValue
     })
   })
   if (!res.ok) {
@@ -58,13 +55,11 @@ export async function resolvePoint(originMode, originValue, originEpsg, nativeCr
   return res.json()
 }
 
-export async function originElevation(file, path, originMode, originValue, originEpsg) {
+export async function originElevation(file, path, originValue) {
   const form = new FormData()
   if (file) form.append('dem_file', file)
   if (path) form.append('file_path', path)
-  form.append('origin_mode', originMode)
   form.append('origin_value', originValue)
-  if (originEpsg) form.append('origin_epsg', originEpsg)
 
   const res = await fetch(`${API_BASE}origin-elevation`, {
     method: 'POST',

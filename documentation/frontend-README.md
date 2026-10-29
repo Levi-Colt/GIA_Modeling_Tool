@@ -57,7 +57,7 @@ frontend/
                            from tiltModel.js)
       vectors.js          the vectors row model and everything pure about it:
                            readiness (vectorIssues), the payload
-                           (buildVectorsDirection), CSV import (papaparse),
+                           (buildVectorsDirection),
                            the map adapter (vectorsToMapData), map-edit
                            formatting (fieldsFromGeometry), the undo stack
       shorePoints.js      the shore-points row model and everything pure about it:
@@ -81,19 +81,18 @@ frontend/
                             is the extension point for the later modeling specs
       steps/               body components the two forms share (no section
                             wrapper/heading of their own): UploadStep,
-                            CoordinateModeStep, CoordinatesStep,
+                            CoordinatesStep (decimal degrees + Pick on map),
                             TargetElevationField, TiltInputs, ProductsStep
       advanced/
         TiltModelBody.jsx  the Advanced Tilt-model section body (the extension
-                            point): direction-source switch (Single azimuth |
-                            Vectors | Shore points), shared azimuth + gradient
+                            point): direction-source switch (Uplift direction |
+                            Shore points) + the "Use multiple directions" checkbox, shared azimuth + gradient
                             inputs, profile family, family parameters, hinge rule,
                             chart; in points mode only the panel + a muted note
         ProfileChart.jsx   hand-rolled SVG uplift-vs-distance preview + warnings
         VectorTable.jsx    the vectors table (#, Lat, Lon, Azim, Range, Tilt, Fit,
-                            remove), custom-tilt rows, + Add row / Add on map /
-                            Undo / Import CSV
-        CsvImport.jsx      the CSV import panel (Replace / Append buttons)
+                            remove), custom-tilt rows, Draw vector / Undo
+        CsvImport.jsx      the shared CSV import panel (shore points; Replace / Append buttons)
         VectorFitSummary.jsx  vectors mode's replacement for the profile chart:
                             fit summary line, guard note, preview warnings
         ShorePointsPanel.jsx  shore-points mode: the points summary (Import CSV /
@@ -165,7 +164,9 @@ frontend/
   `TiltModelBody` too.
 - Vector direction fields (`VECTOR_FIELD_SPEC.md`, spec 5) are implemented in
   Advanced mode. `TiltModelBody` starts with a **Direction source** switch,
-  Single azimuth | Vectors. In vectors mode it shows the vectors table above a
+  Uplift direction | Shore points, and under Uplift direction an opt-in **Use multiple
+  directions** checkbox (off = single azimuth, the default). Checking it arms drawing;
+  vectors are only ever drawn on the map (no add-row, no CSV import). In vectors mode it shows the vectors table above a
   "Global profile (whole DEM)" block (the same gradient / family / hinge controls;
   a muted note says the profile is unused when every vector is custom), and the
   profile chart is replaced by the fit summary (the isobases are on the map).
@@ -174,11 +175,10 @@ frontend/
   family (Linear/Quadratic), a **local gradient** (at that vector's own
   location) and, for a quadratic, the same "Curvature from" control as the
   global profile. The Fit column comes from `/api/uplift-preview` and is amber
-  above 15 degrees. Rows can be added with **+ Add row**, by **Add on map**
-  (drag = direction and range, a short drag is a click and focuses the new
+  above 15 degrees. Rows are created with **Draw vector**
+  (drag = start point, direction and range, a short drag is a click and focuses the new
   row's azimuth input; Escape or Done stops; add mode disables map panning),
-  by **Import CSV** (header aliases matched case-insensitively; bad rows are
-  skipped whole and reported; Replace / Append buttons), and edited by dragging
+  and edited in the table or by dragging
   each arrow's base handle (moves) or tip handle (rotates and resizes; sets the
   azimuth and range). Map edits commit on drag end only; Undo keeps the last 20
   list states (structural edits, not typing).
@@ -191,8 +191,8 @@ frontend/
   when every vector is custom; the single-azimuth line and compass needle are
   not drawn.
 - Shore-point uplift surfaces (`SHORE_POINT_SURFACE_SPEC.md`, spec 6) are
-  implemented in Advanced mode: the **Direction source** switch gains a third
-  segment, **Shore points**. Points come from **Import CSV** (headers `lat|latitude`,
+  implemented in Advanced mode: the **Direction source** switch's second
+  segment is **Shore points**. Points come from **Import CSV** (headers `lat|latitude`,
   `lon|lng|long|longitude`, `elevation|elev|elevation_m|z|height`, optional
   `site|name|site_name|label`, case-insensitive; when lat/lon/elevation cannot all be
   matched a **column picker** shows one select per field over the file's own headers

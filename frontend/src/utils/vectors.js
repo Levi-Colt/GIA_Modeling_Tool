@@ -1,13 +1,12 @@
 // Vector-direction-field helpers (documentation/VECTOR_FIELD_SPEC.md, spec 5):
-// the row model, validation/readiness, the `tilt_model.direction` payload, CSV
-// import, the undo stack and the adapter to the map's `vectors` field. Pure
+// the row model, validation/readiness, the `tilt_model.direction` payload,
+// the undo stack and the adapter to the map's `vectors` field. Pure
 // functions, so readiness.js, payload.js, the table and the tests share one
 // interpretation. Vector fields are kept as strings, like the rest of the form.
 //
 // Range is a vector's range of influence (how far its direction is trusted),
 // never a magnitude; a custom tilt's gradient is *local* -- the gradient at that
 // vector's own location.
-import Papa from 'papaparse'
 import { arrowLengthKm } from './geometry.js'
 import { curvatureForm, parseFiniteNumber, parsePositiveNumber, parseSecondGradient } from './numbers.js'
 
@@ -204,106 +203,8 @@ export function popUndo(stack) {
 }
 
 // ---------------------------------------------------------------------------
-// CSV import.
-
-const HEADER_ALIASES = {
-  lat: ['lat', 'latitude'],
-  lon: ['lon', 'lng', 'long', 'longitude'],
-  azimuth: ['azimuth', 'azimuth_deg', 'az'],
-  range: ['range', 'range_km'],
-  gradient: ['gradient', 'local_gradient'],
-  rate: ['rate', 'rate_of_increase']
-}
-
-function findColumns(fields) {
-  const cols = {}
-  for (const [key, aliases] of Object.entries(HEADER_ALIASES)) {
-    cols[key] = fields.find((f) => aliases.includes(f)) ?? null
-  }
-  return cols
-}
-
-// Cell text, trimmed; '' for missing/empty.
-const cell = (row, col) => (col && row[col] != null ? String(row[col]).trim() : '')
-
-// Parses CSV text into vector rows. Matching is case-insensitive; a row with a
-// gradient becomes a custom tilt (linear, or quadratic with a rate). Invalid
-// rows are skipped whole -- never imported partially -- and reported with their
-// data-row number (1 = the first row under the header).
-//
-// Returns { vectors, skipped: [{ row, reason }], error }. `error` is set (and
-// nothing imported) when the file has no usable header/rows.
-export function parseVectorsCsv(text) {
-  const parsed = Papa.parse(text ?? '', {
-    header: true,
-    skipEmptyLines: 'greedy',
-    transformHeader: (h) => h.trim().toLowerCase()
-  })
-  const fields = parsed.meta?.fields ?? []
-  const cols = findColumns(fields)
-  const missing = ['lat', 'lon', 'azimuth'].filter((k) => !cols[k])
-  if (fields.length === 0 || missing.length) {
-    return {
-      vectors: [],
-      skipped: [],
-      error: `The CSV needs ${missing.map((k) => ({ lat: 'a lat', lon: 'a lon', azimuth: 'an azimuth' })[k]).join(', ')} column${
-        missing.length === 1 ? '' : 's'
-      } (header names are matched without regard to case).`
-    }
-  }
-
-  const vectors = []
-  const skipped = []
-  parsed.data.forEach((row, i) => {
-    const rowNumber = i + 1
-    const skip = (reason) => skipped.push({ row: rowNumber, reason })
-
-    const check = (label, text, lo, hi) => {
-      if (text === '') return `${label} missing`
-      const n = parseFiniteNumber(text)
-      if (n === null) return `${label} is not a number`
-      if (lo !== undefined && (n < lo || n > hi)) return `${label} out of range`
-      return null
-    }
-    const problem =
-      check('latitude', cell(row, cols.lat), -90, 90) ||
-      check('longitude', cell(row, cols.lon), -180, 180) ||
-      check('azimuth', cell(row, cols.azimuth))
-    if (problem) return skip(problem)
-
-    const rangeText = cell(row, cols.range)
-    if (rangeText !== '' && parsePositiveNumber(rangeText) === null) return skip('range must be greater than 0')
-
-    const gradientText = cell(row, cols.gradient)
-    const rateText = cell(row, cols.rate)
-    if (gradientText !== '' && parseFiniteNumber(gradientText) === null) return skip('gradient is not a number')
-    if (rateText !== '' && parseFiniteNumber(rateText) === null) return skip('rate is not a number')
-    if (rateText !== '' && gradientText === '') return skip('rate given without a gradient')
-
-    const azimuth = normalizeAzimuth(parseFiniteNumber(cell(row, cols.azimuth)))
-    const custom =
-      gradientText === ''
-        ? {}
-        : {
-            family: rateText === '' ? 'linear' : 'quadratic',
-            localGradient: gradientText,
-            ...(rateText === '' ? {} : { curvatureInput: 'rate', rateOfIncrease: rateText })
-          }
-    vectors.push(
-      newVector({
-        lat: String(parseFiniteNumber(cell(row, cols.lat))),
-        lon: String(parseFiniteNumber(cell(row, cols.lon))),
-        azimuthDeg: String(Number(azimuth.toFixed(6))),
-        rangeKm: rangeText,
-        tilt: gradientText === '' ? 'global' : 'custom',
-        custom
-      })
-    )
-  })
-
-  if (vectors.length === 0 && skipped.length === 0) return { vectors, skipped, error: 'The CSV has no data rows.' }
-  return { vectors, skipped, error: null }
-}
+// Import reporting, shared with the shore-point CSV import (vectors themselves
+// are drawn on the map and have no import).
 
 // "12 imported, 2 skipped: row 5 azimuth missing, row 9 latitude out of range"
 // Also used for other CSV imports (shore points): `items` is the imported list.

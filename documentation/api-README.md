@@ -93,33 +93,23 @@ past this estimate once it's actually running.
 ## `POST /api/resolve-point`
 
 Cheap coordinate resolution, no file I/O -- wraps the same origin-parsing
-functions `/api/process` uses (`parse_xy_pair` /
-`parse_decimal_degrees_hemisphere` / `normalize_origin_to_wgs84` in
+function `/api/process` uses (`parse_decimal_degrees_hemisphere` in
 `api/crs.py`) for a live map preview, called on every coordinate-field blur.
 Deliberately not built on `/api/origin-elevation`, which reprojects the
 entire raster just to sample one point -- too expensive to fire that often.
 
 **Request** -- JSON body, not multipart (the only endpoint that isn't):
 ```json
-{
-  "origin_mode": "match_raster",
-  "origin_value": "512300,5023100",
-  "origin_epsg": null,
-  "native_crs": "EPSG:32612"
-}
+{ "origin_value": "45.25N,110.55W" }
 ```
-`native_crs` is required only for `match_raster` mode, and is expected to
-come from `/api/preflight`'s `crs` field, cached client-side -- no raster
-re-read needed. For `decimal_degrees` and `epsg` modes this is a pure
-string-parse + `pyproj` point transform; `native_crs` is ignored.
+A pure string parse -- no raster is read. See "Origin format" below.
 
 **Response:**
 ```json
 { "lon": -110.55, "lat": 45.25 }
 ```
-`422` on parse failure, or a missing `origin_epsg`/`native_crs` where the
-given `origin_mode` requires one -- same taxonomy as the other
-origin-handling endpoints. There is no 500m plausibility check here (see
+`422` on parse failure -- same taxonomy as the other origin-handling
+endpoints. There is no 500m plausibility check here (see
 "Plausibility check" below) -- that's only meaningful once a raster is
 involved, and this endpoint deliberately isn't.
 
@@ -159,8 +149,7 @@ convenience.
 
 **Request** — multipart form, same file-resolution duality as
 `/api/preflight` (exactly one of `dem_file` / `file_path`), plus the same
-origin fields `/api/process` takes: `origin_mode`, `origin_value`,
-`origin_epsg` (see "Origin modes" below).
+`origin_value` field `/api/process` takes (see "Origin format" below).
 
 Because it samples against the same reprojected working raster
 `/api/process` actually tilts (not the raw uploaded/pathed file), this
@@ -199,9 +188,7 @@ Interactive docs (request/response schema, try-it-out) are served at `/docs`.
 |---|---|---|---|
 | `dem_file` | file | exactly one of `dem_file` / `file_path` | GeoTIFF, `.tif`/`.tiff` |
 | `file_path` | string | exactly one of `dem_file` / `file_path` | server-side path, same pod filesystem |
-| `origin_mode` | string | yes | one of `"match_raster"`, `"decimal_degrees"`, `"epsg"` |
-| `origin_value` | string | yes | format depends on `origin_mode` -- see below |
-| `origin_epsg` | string | only if `origin_mode == "epsg"` | e.g. `"EPSG:32612"` |
+| `origin_value` | string | yes | hemisphere-annotated decimal degrees, e.g. `"45.25N,110.55W"` -- see "Origin format" below |
 | `tilt_azimuth` | float | yes, unless `tilt_model.direction.type` is `"vectors"` or `"points"` | tilt direction, degrees |
 | `tilt_factor` | float | yes, unless `direction.type` is `"points"`, or `"vectors"` with every vector custom | meters of elevation change per km, at the spillway -- see "Relaxed fields" below |
 | `target_elevation` | float | yes | paleo-elevation to contour, meters -- may be overridden server-side, see "Target elevation resolution" below |
@@ -674,28 +661,19 @@ filtering, identical to a run without the field.
   GeoPackage's contour layer is empty and `X-Processing-Warnings` says so
   (with the pre-filter total).
 
-## Origin modes
+## Origin format
 
-The old single `origin_x` / `origin_y` / `origin_crs` fields were ambiguous
-about coordinate order and units. They're replaced by three explicit modes,
-each with one unambiguous `origin_value` format:
+The origin is always **decimal degrees**: `origin_value` is hemisphere-annotated
+and order-agnostic, e.g. `"45.25N,110.55W"` or `"110.55W,45.25N"` -- either
+order is accepted, since the `N`/`S`/`E`/`W` letter (not position) determines
+which token is latitude and which is longitude. Every non-geographic DEM is
+reprojected to EPSG:4326 server-side, so there is no reason to enter the origin
+in the raster's native CRS or an arbitrary EPSG.
 
-- **`match_raster`** -- `origin_value` is `"x,y"`, plain floats, in the
-  raster's own native CRS and axis order exactly as read from the file. No
-  CRS knowledge is required from the client; the server reads the raster's
-  CRS itself.
-- **`decimal_degrees`** -- `origin_value` is hemisphere-annotated and
-  order-agnostic, e.g. `"45.25N,110.55W"` or `"110.55W,45.25N"` -- either
-  order is accepted, since the `N`/`S`/`E`/`W` letter (not position)
-  determines which token is latitude and which is longitude.
-- **`epsg`** -- `origin_value` is `"x,y"`, plain floats, in the units native
-  to whatever CRS `origin_epsg` specifies (e.g. `"EPSG:32612"`). Unit
-  ambiguity for a projected CRS (meters vs. feet, for example) is resolved
-  by the EPSG code choice itself -- a given UTM zone in meters and the same
-  zone in feet are different EPSG codes -- so there's no separate unit field.
-
-Any `origin_mode` outside these three values, or a malformed `origin_value`
-for the given mode, returns `422`.
+The earlier `origin_mode` (`match_raster` / `decimal_degrees` / `epsg`),
+`origin_epsg` and `native_crs` fields were removed; a client still sending them
+has them ignored, and a bare `"x,y"` `origin_value` is rejected with `422`. A
+malformed `origin_value` returns `422`.
 
 ## Plausibility check
 
@@ -751,7 +729,7 @@ ahead of a full run -- not a second source of truth, and not something
 
 | status | cause |
 |---|---|
-| `422` | neither or both of `dem_file`/`file_path` provided; a required `tilt_azimuth` / `tilt_factor` missing (see "Relaxed fields"); `selection_radius_km` not finite or not `> 0`; an invalid `tilt_model` (see "Tilt model"); unsupported file extension; invalid `origin_mode`; missing `origin_epsg` for `epsg` mode; malformed `origin_value`; unrecognized `origin_epsg`; origin more than 500m from the raster's extent; `target_elevation` outside the DEM's elevation range |
+| `422` | neither or both of `dem_file`/`file_path` provided; a required `tilt_azimuth` / `tilt_factor` missing (see "Relaxed fields"); `selection_radius_km` not finite or not `> 0`; an invalid `tilt_model` (see "Tilt model"); unsupported file extension; malformed `origin_value`; origin more than 500m from the raster's extent; `target_elevation` outside the DEM's elevation range |
 | `413` | upload exceeds the configured size limit |
 | `400` | corrupted/unreadable GeoTIFF; `file_path` does not point to an existing file; other file-not-found conditions |
 | `500` | unexpected processing failure |

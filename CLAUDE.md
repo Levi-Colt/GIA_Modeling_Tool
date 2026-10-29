@@ -66,11 +66,20 @@
 ## Key design decisions
 - CRS handling lives entirely in the API layer (`api/crs.py`), never in
   `backend/main.py`/`backend/app.py`.
-- Origin coordinate input supports three explicit modes (match_raster,
-  decimal_degrees, epsg) rather than one ambiguous format — see
-  `documentation/api-README.md`.
+- **Origin input is decimal degrees only, in the UI** (`frontend/src/utils/origin.js`;
+  FRONTEND_REVIEW item 6). Every non-geographic DEM is reprojected to EPSG:4326
+  server-side, so typing the origin in the raster's native CRS or an EPSG has no use
+  left. It is typed (`45.25N, 110.55W`) or picked with a map click (`Pick on map`,
+  `mapEditMode: 'setOrigin'`, written as hemisphere-annotated decimal degrees). The
+  API was changed to match: **`origin_mode`, `origin_epsg` and `native_crs` are gone**
+  from `/api/process`, `/api/origin-elevation` and `/api/resolve-point` (and
+  `normalize_origin_to_wgs84` / `parse_xy_pair` from `api/crs.py`); `origin_value` is
+  always hemisphere-annotated decimal degrees, and a bare `x,y` is a 422. A client still
+  sending the old fields has them ignored (FastAPI drops unknown form fields). A saved
+  frontend form from an older version in a non-decimal mode has its origin value dropped
+  on load (it no longer parses).
 - A 500m geodesic distance check (via pyproj.Geod) guards against CRS mismatches
-  regardless of which origin mode is used.
+  regardless of how the origin was entered.
 - Non-geographic input rasters are reprojected to EPSG:4326 server-side before
   processing, since calculate_tilt() requires geographic degrees.
 - `calculate_tilt()` uses a locally-calibrated flat-plane approximation, not a
@@ -229,13 +238,19 @@
   uses the real raster's transform — identical for an EPSG:4326 DEM, negligibly
   different for a reprojected one; if they ever diverge, trust the run.
 - **Vector direction fields — frontend** (spec 5). `TiltModelBody` (still the
-  one tilt-model extension point) starts with a Direction-source switch, `Single
-  azimuth | Vectors | Shore points` (the third is spec 6, next entry). State: `advanced.
+  one tilt-model extension point) starts with a Direction-source switch, `Uplift
+  direction | Shore points` (the second is spec 6, next entry), and under
+  `Uplift direction` an opt-in **"Use multiple directions"** checkbox: unchecked is
+  the single azimuth (the default), checked is vectors mode (it arms drawing at once;
+  unchecking returns to the azimuth, keeps the drawn vectors and disarms drawing;
+  stored as `directionSource` `'azimuth'`/`'vectors'`/`'points'`, unchanged).
+  **Vectors are only ever drawn on the map** — there is no "+ Add row" and no CSV
+  import for vectors; the table (start lat/lon, azimuth, range, tilt) is where drawn
+  vectors are adjusted. State: `advanced.
   directionSource` and `advanced.vectors` (persisted; every field a string, rows
   have stable `id`s — `utils/vectors.js` owns the row model, readiness
-  (`vectorIssues`), the payload (`buildVectorsDirection`), CSV import (papaparse;
-  aliases matched case-insensitively; invalid rows skipped whole and reported;
-  Replace/Append buttons) and the undo stack). **Selection, add-on-map mode, the
+  (`vectorIssues`), the payload (`buildVectorsDirection`) and the undo stack; its
+  `applyImport`/`describeImport` are only shared helpers for the shore-point import). **Selection, add-on-map mode, the
   focus request and `upliftPreview` are transient top-level keys** (in
   `TRANSIENT_KEYS`), not in `advanced` — deviating from the spec's sketch, because
   `TRANSIENT_KEYS` only excludes top-level keys. `usingVectors(formState)`
@@ -408,7 +423,7 @@
   `console.warn`, in-memory state unaffected); transient advanced state added
   by later specs must be added to `TRANSIENT_KEYS` in `ProcessingContext.jsx`.
   `getReadiness` returns `{ ready, missing: [{section, text}], missingText }`
-  (`missingText` feeds the footer's "Still needed" line; `section` is
+  (`missingText` is no longer shown in the footer — fields carry their own state, see "Field states" below; `section` is
   `dem | origin | tilt | output`) and `buildProcessPayload` branches on
   `mode`; both have a marked `mode === 'advanced'` branch for later specs
   to append to (it now carries the uplift-model checks / `tilt_model`
@@ -420,6 +435,20 @@
   direction-source switch, vectors, and shore points there. `focusRequest` (`{ id, n }`, in `ProcessingPage`) is how error
   routing reaches the forms: Basic scrolls, Advanced opens the section
   first and then scrolls; it is cleared on mode switches.
+- **Field states and the shared field primitive** (FRONTEND_REVIEW items 1-4, 7, 8;
+  `components/shared/Field.jsx`). Every form control gets its look from the base layer
+  in `index.css` and its label/help/status from `Field`; `statusBorder`/`valueStatus`
+  express the four-state palette — gray (untouched, optional) → **blue** (required,
+  still empty) → green (valid) → red (invalid; red is never used for "not yet filled").
+  `checking` shows a spinner next to the field's message. The origin field shows its
+  own lookup state (`resolveOriginStatus`, plus the transient `resolveOriginMessage`
+  carrying the API's reason); `useOriginChecks` is the one place the two origin
+  round-trips live, shared by the typed field's blur and the map pick. The footer
+  under Run no longer lists what is missing (just "Complete the highlighted fields to
+  run."); `getReadiness` still computes it, and Advanced's section headers still show
+  "Needs: ...". Empty/loading/error placeholders are plain (not dashed) boxes — the
+  dashed border is reserved for the DEM drop zone. The DEM raster preview is fully
+  opaque (`RASTER_OPACITY = 1`).
 - Optional selection radius: `select_contours_within_radius` (`backend/main.py`)
   keeps only contours within N km (geodesic) of the origin, applied in
   `process_dem` after the vertex-count filter/simplify. Only the keep-whole

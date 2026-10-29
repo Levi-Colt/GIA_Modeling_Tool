@@ -10,7 +10,6 @@ import {
   DEFAULT_HINGE,
   DEFAULT_PROFILE,
   DEGREES,
-  DIRECTION_SOURCES,
   FAMILIES,
   HINGE_MODES,
   curvatureForm,
@@ -35,6 +34,15 @@ const POLYNOMIAL_HELP =
 
 const SUBSCRIPT = { 2: '₂', 3: '₃', 4: '₄', 5: '₅' }
 const SUPERSCRIPT = { 2: '²', 3: '³', 4: '⁴', 5: '⁵' }
+
+// Two sources in the switch; "multiple directions" is a checkbox inside the first
+// (stored as directionSource 'azimuth' unchecked, 'vectors' checked).
+const SOURCE_CHOICES = [
+  { value: 'direction', label: 'Uplift direction' },
+  { value: 'points', label: 'Shore points' }
+]
+const MULTI_HELP =
+  'Off: one uplift direction (azimuth) for the whole DEM. On: draw vectors on the map, each with its own start point, azimuth and range, then adjust their values in the table.'
 
 const GLOBAL_UNUSED_NOTE = 'Global profile not used — every vector has a custom tilt. The hinge below still applies.'
 
@@ -63,17 +71,24 @@ export default function TiltModelBody() {
   // The chart marks the second-gradient point while that form is active.
   const secondGradient = family === 'quadratic' && form === 'secondGradient' ? parseSecondGradient(profile) : null
 
-  const setSource = (directionSource) => {
-    updateAdvanced({ directionSource })
-    setMapEditMode('none') // leaving vectors mode disarms "Add on map"
+  const setSource = (choice) => {
+    updateAdvanced({ directionSource: choice === 'points' ? 'points' : 'azimuth' })
+    setMapEditMode('none') // leaving vectors mode disarms drawing
   }
+  // Turning multiple directions on arms drawing straight away; turning it off
+  // returns to the single azimuth (the drawn vectors are kept, not cleared).
+  const setMulti = (on) => {
+    updateAdvanced({ directionSource: on ? 'vectors' : 'azimuth' })
+    setMapEditMode(on ? 'addVector' : 'none')
+  }
+  const sourceChoice = pointsMode ? 'points' : 'direction'
   const everyVectorCustom = vectorsMode && allCustom(formState.advanced.vectors ?? [])
 
   if (pointsMode) {
     // Magnitude comes from the data: no gradient, profile family or hinge.
     return (
       <div className="space-y-3">
-        <Segmented label="Direction source" options={DIRECTION_SOURCES} value={source} onChange={setSource} />
+        <Segmented label="Direction source" options={SOURCE_CHOICES} value={sourceChoice} onChange={setSource} />
         <ShorePointsPanel />
         <p className="text-xs text-gray-500">Magnitude comes from the fitted surface.</p>
       </div>
@@ -82,7 +97,15 @@ export default function TiltModelBody() {
 
   return (
     <div className="space-y-3">
-      <Segmented label="Direction source" options={DIRECTION_SOURCES} value={source} onChange={setSource} />
+      <Segmented label="Direction source" options={SOURCE_CHOICES} value={sourceChoice} onChange={setSource} />
+
+      <div>
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" checked={vectorsMode} onChange={(e) => setMulti(e.target.checked)} />
+          Use multiple directions
+        </label>
+        <Help>{MULTI_HELP}</Help>
+      </div>
 
       {vectorsMode ? (
         <>
@@ -94,12 +117,13 @@ export default function TiltModelBody() {
 
       <TiltInputs
         showAzimuth={!vectorsMode}
+        factorRequired={!vectorsMode || !everyVectorCustom}
         azimuthLabel="Single azimuth"
         factorLabel="Gradient at spillway (m/km)"
         factorHelp={GRADIENT_HELP}
       />
 
-      <label className="block text-xs text-gray-500">
+      <label className="block text-xs font-medium text-gray-700">
         Profile family
         <select
           value={family}
@@ -128,6 +152,7 @@ export default function TiltModelBody() {
                 <NumberField
                   label="Gradient (m/km)"
                   placeholder="m/km"
+                  required
                   value={profile.secondGradient}
                   onChange={(secondGradient) => setProfile({ secondGradient })}
                 />
@@ -135,6 +160,7 @@ export default function TiltModelBody() {
                   label="at distance (km) up the uplift direction from the spillway"
                   placeholder="km"
                   positive
+                  required
                   value={profile.secondGradientDistanceKm}
                   onChange={(secondGradientDistanceKm) => setProfile({ secondGradientDistanceKm })}
                 />
@@ -146,6 +172,7 @@ export default function TiltModelBody() {
               <NumberField
                 label="Rate of increase (m/km per km)"
                 placeholder="m/km per km"
+                required
                 value={profile.rateOfIncrease}
                 onChange={(rateOfIncrease) => setProfile({ rateOfIncrease })}
               />
@@ -157,7 +184,7 @@ export default function TiltModelBody() {
 
       {family === 'polynomial' && (
         <div className="space-y-2">
-          <label className="block text-xs text-gray-500">
+          <label className="block text-xs font-medium text-gray-700">
             Degree
             <select
               value={coefficientCount + 1}
@@ -182,6 +209,7 @@ export default function TiltModelBody() {
                   key={k}
                   label={`c${SUBSCRIPT[k]} (${units})`}
                   placeholder={units}
+                  required
                   value={profile.coefficients[i] ?? ''}
                   onChange={(text) => {
                     const coefficients = [...profile.coefficients]
@@ -197,7 +225,7 @@ export default function TiltModelBody() {
       )}
 
       <div>
-        <label className="block text-xs text-gray-500">
+        <label className="block text-xs font-medium text-gray-700">
           Hinge behind spillway
           <select value={hingeMode} onChange={(e) => setHinge({ mode: e.target.value })} className="mt-1 w-full">
             {HINGE_MODES.map((m) => (
@@ -215,6 +243,7 @@ export default function TiltModelBody() {
           label="Hinge distance (km)"
           placeholder="km"
           positive
+          required
           value={hinge.distanceKm}
           onChange={(distanceKm) => setHinge({ distanceKm })}
         />

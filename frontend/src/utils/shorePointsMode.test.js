@@ -37,7 +37,6 @@ function form(count, patch = {}, advancedExtra = {}) {
     preflightStatus: 'valid',
     demFile: null,
     demPath: '/data/dem.tif',
-    originMode: 'decimal_degrees',
     originValue: '45, -105',
     originEpsg: '',
     tiltAzimuth: '28',

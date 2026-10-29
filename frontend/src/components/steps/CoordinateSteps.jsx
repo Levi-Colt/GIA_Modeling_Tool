@@ -1,129 +1,70 @@
 import { useProcessing } from '../../context/ProcessingContext.jsx'
-import { originElevation, resolvePoint } from '../../api/client.js'
+import { useOriginChecks } from '../../hooks/useOriginChecks.js'
+import Field, { statusBorder } from '../shared/Field.jsx'
 
-const MODE_CONFIG = {
-  match_raster: { placeholder: '"x,y" in the raster\'s native CRS', showEpsg: false },
-  decimal_degrees: { placeholder: '45.25N,110.55W', showEpsg: false },
-  epsg: { placeholder: '"x,y" in the target CRS\'s units', showEpsg: true }
-}
+const FORMAT_HELP = 'Decimal degrees with N/S and E/W, e.g. 12.5N, 34.25E. Or pick the point on the map.'
 
-// Bodies only -- section wrappers/headings and the `step-coordinates` id live in
-// BasicForm / AdvancedForm.
-export function CoordinateModeStep() {
-  const { formState, updateForm } = useProcessing()
-  return (
-    <select value={formState.originMode} onChange={(e) => updateForm({ originMode: e.target.value })}>
-      <option value="decimal_degrees">Decimal degrees</option>
-      <option value="match_raster">Match raster</option>
-      <option value="epsg">EPSG code</option>
-    </select>
-  )
-}
-
+// Body only -- section wrappers/headings and the `step-coordinates` id live in
+// BasicForm / AdvancedForm. Origin input is decimal degrees only (typed, or
+// picked on the map), so there is no mode selector.
 export function CoordinatesStep() {
-  const { formState, updateForm } = useProcessing()
-  const config = MODE_CONFIG[formState.originMode]
+  const { formState, updateForm, setMapEditMode } = useProcessing()
+  const { checkOrigin } = useOriginChecks()
+  const { originValue, resolveOriginStatus, resolveOriginMessage } = formState
+  const picking = formState.mapEditMode === 'setOrigin'
 
-  // Preview the DEM's elevation at the resolved origin once the file is
-  // known-good and the coordinate fields are complete enough to resolve —
-  // fires on blur (mirrors UploadStep's path-input pattern), not on every
-  // keystroke, since it's a real backend round-trip including reprojection.
-  // /api/process re-derives this independently either way; this is UX only.
-  async function checkElevation() {
-    const originValue = formState.originValue.trim()
-    if (formState.preflightStatus !== 'valid' || !originValue) return
-    if (formState.originMode === 'epsg' && !formState.originEpsg.trim()) return
-
-    updateForm({ elevationCheckStatus: 'checking', elevationCheckValue: null })
-    try {
-      const result = await originElevation(
-        formState.demFile,
-        formState.demPath,
-        formState.originMode,
-        originValue,
-        formState.originEpsg
-      )
-      if (result.within_bounds && result.elevation !== null) {
-        updateForm({
-          elevationCheckStatus: 'dem',
-          elevationCheckValue: result.elevation,
-          targetElevation: result.elevation
-        })
-      } else if (result.reason === 'nodata') {
-        updateForm({ elevationCheckStatus: 'nodata', elevationCheckValue: null })
-      } else {
-        updateForm({ elevationCheckStatus: 'outside_bounds', elevationCheckValue: null })
-      }
-    } catch {
-      // Preview call failed -- fall back to a plain editable field, same as
-      // if the check had never run.
-      updateForm({ elevationCheckStatus: 'idle', elevationCheckValue: null })
-    }
-  }
-
-  // Resolves the origin to (lon, lat) for the map's input preview (origin
-  // marker + azimuth line) -- same blur trigger as checkElevation, since
-  // both are cheap-ish backend round-trips that shouldn't fire on every
-  // keystroke. Purely a preview: /api/process re-derives the real origin
-  // independently either way.
-  async function checkResolvedOrigin() {
-    const originValue = formState.originValue.trim()
-    if (!originValue) return
-    if (formState.originMode === 'epsg' && !formState.originEpsg.trim()) return
-    if (formState.originMode === 'match_raster' && !formState.demCrs) return
-
-    updateForm({ resolveOriginStatus: 'checking' })
-    try {
-      const { lon, lat } = await resolvePoint(
-        formState.originMode,
-        originValue,
-        formState.originEpsg,
-        formState.demCrs
-      )
-      updateForm({ resolveOriginStatus: 'resolved', resolvedOrigin: [lon, lat] })
-    } catch {
-      updateForm({ resolveOriginStatus: 'error', resolvedOrigin: null })
-    }
-  }
-
-  function handleBlur() {
-    checkElevation()
-    checkResolvedOrigin()
+  // Field state, shown on the input itself (not in a different section below):
+  // blue while empty, a spinner while resolving, green once located, red on failure.
+  let status = 'default'
+  let message = null
+  if (originValue.trim() === '') {
+    status = 'required'
+  } else if (resolveOriginStatus === 'checking') {
+    status = 'checking'
+    message = 'Looking up origin...'
+  } else if (resolveOriginStatus === 'resolved') {
+    status = 'valid'
+    message = 'Origin located.'
+  } else if (resolveOriginStatus === 'error') {
+    status = 'invalid'
+    message = resolveOriginMessage || 'Could not read that coordinate.'
   }
 
   return (
-    <div>
-      <input
-        type="text"
-        placeholder={config.placeholder}
-        value={formState.originValue}
-        onChange={(e) => updateForm({
-          originValue: e.target.value,
-          // Invalidates the previous blur-triggered check immediately, so a
-          // stale elevationCheckValue/targetElevation from an earlier
-          // coordinate can't look "current" just because the field hasn't
-          // been re-blurred yet. isReadyToRun (App.jsx) gates on this going
-          // back to 'idle' until a fresh check resolves.
-          elevationCheckStatus: 'idle',
-          resolveOriginStatus: 'idle'
-        })}
-        onBlur={handleBlur}
-        className="w-full"
-      />
-      {config.showEpsg && (
+    <Field label="Origin (lat, lon)" htmlFor="origin-input" status={status} message={message} help={FORMAT_HELP}>
+      <div className="flex gap-2">
         <input
+          id="origin-input"
           type="text"
-          placeholder="EPSG:32612"
-          value={formState.originEpsg}
-          onChange={(e) => updateForm({
-            originEpsg: e.target.value,
-            elevationCheckStatus: 'idle',
-            resolveOriginStatus: 'idle'
-          })}
-          onBlur={handleBlur}
-          className="mt-2 w-full"
+          placeholder="latitude, longitude"
+          value={originValue}
+          aria-invalid={status === 'invalid' || undefined}
+          onChange={(e) =>
+            updateForm({
+              originValue: e.target.value,
+              // Invalidates the previous blur-triggered check immediately, so a
+              // stale elevationCheckValue/targetElevation from an earlier
+              // coordinate can't look "current" just because the field hasn't
+              // been re-blurred yet. isReadyToRun gates on this going back to
+              // 'idle' until a fresh check resolves.
+              elevationCheckStatus: 'idle',
+              resolveOriginStatus: 'idle'
+            })
+          }
+          onBlur={() => checkOrigin()}
+          className={`min-w-0 flex-1 ${statusBorder(status)}`}
         />
-      )}
-    </div>
+        <button
+          type="button"
+          aria-pressed={picking}
+          onClick={() => setMapEditMode(picking ? 'none' : 'setOrigin')}
+          className={`shrink-0 rounded-md border px-2 py-1 text-xs ${
+            picking ? 'border-gray-900 bg-gray-900 text-white' : 'border-gray-300 bg-white text-gray-700'
+          }`}
+        >
+          Pick on map
+        </button>
+      </div>
+    </Field>
   )
 }

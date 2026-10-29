@@ -185,7 +185,7 @@ export default function ProfileChart({ preview, secondGradient = null }) {
           <Curve data={data} secondGradient={secondGradient} />
         </div>
       ) : (
-        <p className="rounded-md border border-dashed border-gray-300 px-3 py-6 text-center text-xs text-gray-500">
+        <p className="rounded-md bg-gray-50 px-3 py-6 text-center text-xs text-gray-500">
           {preview?.status === 'error'
             ? preview.error
             : preview?.status === 'loading'

@@ -14,6 +14,12 @@ import { RESIDUAL_GRADIENT, RESIDUAL_UNKNOWN, residualColor, residualExtent } fr
 // still shows around the DEM's extent).
 const RASTER_OPACITY = 1
 
+// Isobases are bright red so they stand out on the raster; the strandline contour is
+// near-black so the two never read as the same kind of line.
+const ISOBASE_COLOR = '#ff0000'
+const ISOBASE_LABEL_COLOR = '#d40000'
+const CONTOUR_COLOR = '#111827'
+
 // Overlay stacking, bottom to top, per the map contract: raster (tilePane, 200)
 // -> selection radius -> data hull -> isobases -> contour -> vectors -> shore
 // points -> azimuth line -> origin. (Vectors, points and the azimuth line belong to
@@ -47,7 +53,7 @@ const signed = (r) => `${r > 0 ? '+' : r < 0 ? '−' : ''}${Math.abs(r).toFixed(
 //   tiltedRasterPreview?: { georaster }          // from /api/process's bundled response
 //   selectionRadius?: { center: [lon, lat], radiusKm } // derived in App.jsx deriveMapDataFromForm
 //   vectors?: [{ id, number, lon, lat, azimuthDeg | null, rangeKm | null,
-//                lengthKm, selected, custom }]   // spec 5; drawn as arrows
+//                lengthKm, selected }]   // spec 5; drawn as arrows
 //   isobases?: GeoJSON                           // from /api/uplift-preview; LineStrings with `uplift_m`
 //   shorePoints?: [{ id, lon, lat, elevationM, residualM | null, outlier, label }]  // spec 6; render-only
 //   surfaceIsobases?: { inside: GeoJSON, outside: GeoJSON }  // from /api/fit-uplift-surface; LineStrings
@@ -264,7 +270,7 @@ export default function MapPanel({ mapData, azimuthDeg, editing, originPicking }
       L.geoJSON(isobases, {
         pane: 'isobases',
         interactive: false,
-        style: (f) => ({ color: '#3b82f6', weight: f.properties?.uplift_m === 0 ? 2.5 : 1, opacity: 0.85 })
+        style: (f) => ({ color: ISOBASE_COLOR, weight: f.properties?.uplift_m === 0 ? 2.5 : 1.5, opacity: 1 })
       }).addTo(group)
       for (const f of isobases.features) {
         const coords = f.geometry?.coordinates
@@ -278,7 +284,7 @@ export default function MapPanel({ mapData, azimuthDeg, editing, originPicking }
             className: '',
             iconSize: null,
             html:
-              '<span style="font:600 11px system-ui,sans-serif;color:#1d4ed8;white-space:nowrap;' +
+              '<span style="font:600 11px system-ui,sans-serif;color:'+ISOBASE_LABEL_COLOR+';white-space:nowrap;' +
               'text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff;">' +
               `${isobaseLabel(f.properties?.uplift_m)}</span>`
           })
@@ -330,7 +336,7 @@ export default function MapPanel({ mapData, azimuthDeg, editing, originPicking }
         L.geoJSON(fc, {
           pane: 'isobases',
           interactive: false,
-          style: { color: '#3b82f6', weight: 1.25, opacity: 0.9, dashArray }
+          style: { color: ISOBASE_COLOR, weight: 1.5, opacity: 1, dashArray }
         }).addTo(group)
         for (const f of fc.features) {
           const coords = f.geometry?.coordinates
@@ -344,7 +350,7 @@ export default function MapPanel({ mapData, azimuthDeg, editing, originPicking }
               className: '',
               iconSize: null,
               html:
-                '<span style="font:600 11px system-ui,sans-serif;color:#1d4ed8;white-space:nowrap;' +
+                '<span style="font:600 11px system-ui,sans-serif;color:'+ISOBASE_LABEL_COLOR+';white-space:nowrap;' +
                 'text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff;">' +
                 `${elevationLabel(f.properties?.elevation_m)}</span>`
             })
@@ -365,7 +371,7 @@ export default function MapPanel({ mapData, azimuthDeg, editing, originPicking }
       layers.contour = null
     }
     if (contour) {
-      layers.contour = L.geoJSON(contour, { pane: 'contour', style: { color: '#dc2626', weight: 2 } }).addTo(map)
+      layers.contour = L.geoJSON(contour, { pane: 'contour', style: { color: CONTOUR_COLOR, weight: 2.5 } }).addTo(map)
     }
   }, [contour])
 
@@ -556,6 +562,15 @@ export default function MapPanel({ mapData, azimuthDeg, editing, originPicking }
           >
             Done
           </button>
+        </div>
+      )}
+      {mapData?.isobases?.features?.length > 0 && (
+        <div
+          role="note"
+          className="absolute bottom-7 left-2 z-[1000] max-w-[14rem] rounded-md bg-white/95 px-2 py-1.5 text-[11px] text-gray-700 shadow"
+        >
+          <div className="font-medium text-red-700">Isobases (m)</div>
+          <div>Uplift relative to the spillway. The tilted DEM is the DEM minus this uplift.</div>
         </div>
       )}
       {picking && (

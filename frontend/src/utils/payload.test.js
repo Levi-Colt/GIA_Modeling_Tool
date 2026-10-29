@@ -14,7 +14,6 @@ const form = {
   demFile: null,
   demPath: '/data/dem.tif',
   originValue: '40, -105',
-  originEpsg: '',
   tiltAzimuth: '45',
   tiltFactor: '0.5',
   targetElevation: '1500',
@@ -70,14 +69,14 @@ describe('tilt_model (Advanced)', () => {
     expect(tiltModel({ profile, hinge })).toEqual({
       version: 1,
       direction: { type: 'azimuth' },
-      profile: { family: 'linear', rate_of_increase: null, second_gradient: null, coefficients: null },
+      profile: { family: 'linear', rate_of_increase: null, formula: null },
       hinge: { mode: 'origin', distance_km: null }
     })
   })
 
   it('the hinge defaults to origin for every family', () => {
-    const quad = { ...profile, family: 'quadratic', secondGradient: '1.2', secondGradientDistanceKm: '150' }
-    const poly = { ...profile, family: 'polynomial', coefficients: ['0.002', '', '', ''], degree: 2 }
+    const quad = { ...profile, family: 'quadratic', rateOfIncrease: '4e-3' }
+    const poly = { ...profile, family: 'polynomial', formula: '2e-3 x^2' }
     for (const p of [profile, quad, poly]) expect(tiltModel({ profile: p, hinge }).hinge.mode).toBe('origin')
   })
 
@@ -86,68 +85,34 @@ describe('tilt_model (Advanced)', () => {
       const body = buildProcessPayload({
         ...form,
         mode: 'advanced',
-        advanced: { profile: { ...profile, family: 'quadratic', curvatureInput: 'rate', rateOfIncrease: '1' }, hinge: { mode, distanceKm: '' } }
+        advanced: { profile: { ...profile, family: 'quadratic', rateOfIncrease: '1' }, hinge: { mode, distanceKm: '' } }
       }).tilt_model
       expect(JSON.parse(body).hinge).toEqual({ mode: 'origin', distance_km: null })
       expect(body).not.toMatch(/default|natural/)
     }
   })
 
-  it('a quadratic by rate sends only the rate', () => {
+  it('a quadratic sends only its rate', () => {
     const model = tiltModel({
-      profile: {
-        ...profile, family: 'quadratic', curvatureInput: 'rate', rateOfIncrease: '4e-3',
-        secondGradient: '1.2', secondGradientDistanceKm: '150'
-      },
+      profile: { ...profile, family: 'quadratic', rateOfIncrease: '4e-3', formula: '1 x^2' },
+      hinge
+    })
+    expect(model.profile).toEqual({ family: 'quadratic', rate_of_increase: 0.004, formula: null })
+  })
+
+  it('a polynomial sends its formula as typed (trimmed); the server parses it', () => {
+    const model = tiltModel({
+      profile: { ...profile, family: 'polynomial', formula: '  2e-4 x^2 - 1.5e-7 x^3 ', rateOfIncrease: 'abc' },
       hinge
     })
     expect(model.profile).toEqual({
-      family: 'quadratic', rate_of_increase: 0.004, second_gradient: null, coefficients: null
+      family: 'polynomial', rate_of_increase: null, formula: '2e-4 x^2 - 1.5e-7 x^3'
     })
   })
 
-  it('a quadratic by second gradient sends only the second gradient', () => {
-    const model = tiltModel({
-      profile: {
-        ...profile, family: 'quadratic', curvatureInput: 'secondGradient', rateOfIncrease: '4e-3',
-        secondGradient: '1.2', secondGradientDistanceKm: '150'
-      },
-      hinge
-    })
-    expect(model.profile).toEqual({
-      family: 'quadratic',
-      rate_of_increase: null,
-      second_gradient: { gradient_m_per_km: 1.2, distance_km: 150 },
-      coefficients: null
-    })
-  })
-
-  it.each([
-    [2, [0.1]],
-    [3, [0.1, 0.2]],
-    [4, [0.1, 0.2, 0.3]],
-    [5, [0.1, 0.2, 0.3, 0.4]]
-  ])('polynomial degree %i sends only c2..cN, as numbers', (degree, expected) => {
-    const model = tiltModel({
-      profile: { ...profile, family: 'polynomial', degree, coefficients: ['0.1', '0.2', '0.3', '0.4'] },
-      hinge
-    })
-    expect(model.profile.coefficients).toEqual(expected)
-    expect(model.profile.rate_of_increase).toBeNull()
-    expect(model.profile.second_gradient).toBeNull()
-  })
-
-  it('ignores values typed into hidden coefficient slots and other families', () => {
-    const model = tiltModel({
-      profile: {
-        ...profile, family: 'polynomial', degree: 2, coefficients: ['0.1', 'junk', 'junk', 'junk'],
-        rateOfIncrease: 'abc', secondGradient: 'abc'
-      },
-      hinge
-    })
-    expect(model.profile).toEqual({
-      family: 'polynomial', rate_of_increase: null, second_gradient: null, coefficients: [0.1]
-    })
+  it('a linear profile sends neither the rate nor the formula typed for the other families', () => {
+    const model = tiltModel({ profile: { ...profile, rateOfIncrease: '4e-3', formula: '1 x^2' }, hinge })
+    expect(model.profile).toEqual({ family: 'linear', rate_of_increase: null, formula: null })
   })
 
   it('sends a distance hinge with its km, and no km for other modes', () => {

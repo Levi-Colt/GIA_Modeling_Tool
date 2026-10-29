@@ -23,23 +23,22 @@ describe('newVector / normalizeVectors', () => {
     const b = newVector()
     expect(a.id).toMatch(/^v_/)
     expect(a.id).not.toBe(b.id)
-    expect(a).toMatchObject({ lat: '', lon: '', azimuthDeg: '', rangeKm: '', tilt: 'global' })
-    expect(a.custom).toEqual({
-      family: 'linear',
-      localGradient: '',
-      curvatureInput: 'secondGradient',
-      rateOfIncrease: '',
-      secondGradient: '',
-      secondGradientDistanceKm: ''
-    })
+    expect(a).toEqual({ id: a.id, lat: '', lon: '', azimuthDeg: '', rangeKm: '' })
   })
 
   it('repairs a saved list: missing ids/keys get defaults, junk is dropped', () => {
-    const [v] = normalizeVectors([{ lat: '1', custom: { localGradient: '0.4' } }, null, 5])
+    const [v] = normalizeVectors([{ lat: '1' }, null, 5])
     expect(normalizeVectors([{}, null, 5])).toHaveLength(1)
     expect(v.id).toMatch(/^v_/)
-    expect(v.custom).toMatchObject({ family: 'linear', localGradient: '0.4', curvatureInput: 'secondGradient' })
+    expect(v).toMatchObject({ lat: '1', lon: '', azimuthDeg: '', rangeKm: '' })
     expect(normalizeVectors(undefined)).toEqual([])
+  })
+
+  it('drops the per-vector tilt an older save carried (vectors only give directions now)', () => {
+    const [v] = normalizeVectors([{ lat: '1', tilt: 'custom', custom: { family: 'quadratic', localGradient: '0.4' } }])
+    expect(v).not.toHaveProperty('tilt')
+    expect(v).not.toHaveProperty('custom')
+    expect(v.lat).toBe('1')
   })
 })
 
@@ -48,7 +47,7 @@ describe('vectorIssues (readiness)', () => {
     expect(vectorIssues([])).toEqual(['at least one vector'])
   })
 
-  it('accepts complete global rows', () => {
+  it('accepts complete rows', () => {
     expect(vectorIssues([vec(), vec({ lat: '46', rangeKm: '150' })])).toEqual([])
   })
 
@@ -68,41 +67,6 @@ describe('vectorIssues (readiness)', () => {
     expect(vectorIssues([vec({ azimuthDeg: '-10' }), vec({ azimuthDeg: '370' })])).toEqual([])
   })
 
-  it('custom rows need a local gradient, and only the active curvature form', () => {
-    const custom = (c) => vec({ tilt: 'custom', custom: c })
-    expect(vectorIssues([custom({ family: 'linear', localGradient: '0.4' })])).toEqual([])
-    expect(vectorIssues([custom({ family: 'linear', localGradient: '' })])).toEqual([
-      'a complete custom tilt for vector 1'
-    ])
-    // A quadratic on the second-gradient form: the rate is not required...
-    expect(
-      vectorIssues([
-        custom({
-          family: 'quadratic', localGradient: '0.4', curvatureInput: 'secondGradient',
-          secondGradient: '1', secondGradientDistanceKm: '50'
-        })
-      ])
-    ).toEqual([])
-    // ...and an incomplete second gradient is.
-    expect(
-      vectorIssues([
-        custom({ family: 'quadratic', localGradient: '0.4', curvatureInput: 'secondGradient', secondGradient: '1' })
-      ])
-    ).toEqual(['a complete custom tilt for vector 1'])
-    // The rate form needs its rate, not the second gradient.
-    expect(
-      vectorIssues([custom({ family: 'quadratic', localGradient: '0.4', curvatureInput: 'rate', rateOfIncrease: '1e-3' })])
-    ).toEqual([])
-    expect(
-      vectorIssues([custom({ family: 'quadratic', localGradient: '0.4', curvatureInput: 'rate', secondGradient: '1',
-        secondGradientDistanceKm: '5' })])
-    ).toEqual(['a complete custom tilt for vector 1'])
-  })
-
-  it('a global row never needs its (hidden) custom fields', () => {
-    expect(vectorIssues([vec({ tilt: 'global', custom: { localGradient: '' } })])).toEqual([])
-  })
-
   it('caps the list at 200', () => {
     const many = Array.from({ length: MAX_VECTORS + 1 }, () => vec())
     expect(vectorIssues(many)).toEqual([`no more than ${MAX_VECTORS} vectors`])
@@ -117,51 +81,25 @@ describe('buildVectorsDirection (payload)', () => {
       vec({ azimuthDeg: '370' })
     ])
     expect(direction.type).toBe('vectors')
-    expect(direction.vectors[0]).toEqual({ lat: 49.9, lon: -97.2, azimuth_deg: 28, range_km: 150, custom: null })
+    expect(direction.vectors[0]).toEqual({ lat: 49.9, lon: -97.2, azimuth_deg: 28, range_km: 150 })
     expect(direction.vectors[1].azimuth_deg).toBe(350)
     expect(direction.vectors[1].range_km).toBeNull()
     expect(direction.vectors[2].azimuth_deg).toBe(10)
   })
 
-  it('a custom linear sends only family and local_gradient', () => {
-    const [v] = buildVectorsDirection([vec({ tilt: 'custom', custom: { family: 'linear', localGradient: '0.6' } })]).vectors
-    expect(v.custom).toEqual({ family: 'linear', local_gradient: 0.6 })
-  })
-
-  it('a custom quadratic sends only its active curvature form (hidden values kept in state, not sent)', () => {
-    const base = {
-      family: 'quadratic', localGradient: '0.6', rateOfIncrease: '0.004',
-      secondGradient: '1.0', secondGradientDistanceKm: '120'
-    }
-    const second = buildVectorsDirection([vec({ tilt: 'custom', custom: { ...base, curvatureInput: 'secondGradient' } })])
-    expect(second.vectors[0].custom).toEqual({
-      family: 'quadratic', local_gradient: 0.6,
-      second_gradient: { gradient_m_per_km: 1, distance_km: 120 }
-    })
-    const rate = buildVectorsDirection([vec({ tilt: 'custom', custom: { ...base, curvatureInput: 'rate' } })])
-    expect(rate.vectors[0].custom).toEqual({ family: 'quadratic', local_gradient: 0.6, rate_of_increase: 0.004 })
-  })
-
-  it('accepts e-notation in gradients', () => {
-    const [v] = buildVectorsDirection([
-      vec({ tilt: 'custom', custom: { family: 'quadratic', localGradient: '3.5e-1', curvatureInput: 'rate', rateOfIncrease: '6e-3' } })
-    ]).vectors
-    expect(v.custom.local_gradient).toBeCloseTo(0.35)
-    expect(v.custom.rate_of_increase).toBeCloseTo(0.006)
-  })
 })
 
 describe('vectorsToMapData', () => {
   const extent = [-106, 44, -105, 45]
 
-  it('carries location, direction, length, selection, custom flag and the 1-based row number', () => {
+  it('carries location, direction, length, selection and the 1-based row number', () => {
     const a = vec({ rangeKm: '40' })
-    const b = vec({ azimuthDeg: '', tilt: 'custom' })
+    const b = vec({ azimuthDeg: '' })
     const out = vectorsToMapData([a, b], b.id, extent)
     expect(out).toHaveLength(2)
-    expect(out[0]).toMatchObject({ id: a.id, number: 1, lon: -105, lat: 45, azimuthDeg: 30, rangeKm: 40, lengthKm: 40, selected: false, custom: false })
+    expect(out[0]).toMatchObject({ id: a.id, number: 1, lon: -105, lat: 45, azimuthDeg: 30, rangeKm: 40, lengthKm: 40, selected: false })
     // No azimuth yet (a click-added row): the map draws only its base handle.
-    expect(out[1]).toMatchObject({ number: 2, azimuthDeg: null, rangeKm: null, selected: true, custom: true })
+    expect(out[1]).toMatchObject({ number: 2, azimuthDeg: null, rangeKm: null, selected: true })
     expect(out[1].lengthKm).toBeGreaterThan(0) // 10% of the DEM diagonal
   })
 

@@ -435,6 +435,27 @@
   direction-source switch, vectors, and shore points there. `focusRequest` (`{ id, n }`, in `ProcessingPage`) is how error
   routing reaches the forms: Basic scrolls, Advanced opens the section
   first and then scrolls; it is cleared on mode switches.
+- **Profile and vector simplification (supersedes the parts of the Uplift-models and
+  Vector entries that describe it).** Tilt is set in the **Profile block alone**
+  (gradient at the spillway, family, hinge); the direction block only says *which way*.
+  (1) **No `second_gradient`**: a quadratic takes only `rate_of_increase`.
+  (2) **A polynomial takes a `formula`**, not `coefficients`: terms of `a x^p`, p = 2..5,
+  x in km along the uplift direction (`api/formula.py` parses it authoritatively;
+  `frontend/src/utils/formula.js` is the live-validation copy; `tests/test_profile_formula.py`
+  and `formula.test.js` share their cases — keep them in step). The linear term is the
+  gradient at the spillway, so an exponent of 1 is rejected. `run_parameters.json` records
+  the formula as typed *and* the derived `coefficients`. The backend (`backend/uplift.py`)
+  is unchanged: it still gets canonical `rate_of_increase` / `coefficients`.
+  (3) **No per-vector custom tilts**: vectors are `{lat, lon, azimuth_deg, range_km}` only
+  (`custom` is an unknown key → 422); the one global profile (and `tilt_factor`, now
+  always required in vectors mode) gives the magnitude everywhere. `direction_field.py`
+  lost Case B (the second least-squares pass) and its `diagnostics.case`; the model is always
+  `profile.U(max(phi, hinge))`. Saves from older versions drop `tilt`/`custom` on vectors and the
+  retired profile keys (a polynomial/second-gradient save comes back with the new field empty).
+  (4) Isobase labels are the **uplift U relative to the spillway** (`+100 m` = the land there
+  is 100 m more uplifted than at the spillway; the tilted DEM is DEM − U, so it is *lowered* by
+  100 m there); the map's isobase legend says so. Isobases are bright red, the strandline
+  contour near-black.
 - **Field states and the shared field primitive** (FRONTEND_REVIEW items 1-4, 7, 8;
   `components/shared/Field.jsx`). Every form control gets its look from the base layer
   in `index.css` and its label/help/status from `Field`; `statusBorder`/`valueStatus`

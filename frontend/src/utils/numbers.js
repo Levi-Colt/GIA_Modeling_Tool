@@ -21,16 +21,3 @@ export function parsePositiveNumber(text) {
   const n = parseFiniteNumber(text)
   return n !== null && n > 0 ? n : null
 }
-
-// Which curvature form a quadratic (a global profile, or a vector's custom tilt
-// -- both use the same field names) is using: 'secondGradient' unless 'rate'.
-export function curvatureForm(source) {
-  return source.curvatureInput === 'rate' ? 'rate' : 'secondGradient'
-}
-
-// The active second-gradient inputs as numbers, or null unless both are valid.
-export function parseSecondGradient(source) {
-  const gradient = parseFiniteNumber(source.secondGradient)
-  const distanceKm = parsePositiveNumber(source.secondGradientDistanceKm)
-  return gradient !== null && distanceKm !== null ? { gradient, distanceKm } : null
-}

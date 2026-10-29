@@ -8,23 +8,21 @@ that `parse_tilt_model` / `validate_tilt_model` return and has no Pydantic or
 FastAPI imports. Every rule below raises TiltModelError with a specific,
 user-facing message; the endpoints turn that into a 422 `detail`.
 
-A quadratic profile's curvature may be given as a `rate_of_increase` k, or as a
-`second_gradient` (a gradient at a distance up the uplift direction). The
-backend stays canonical in k: this layer converts, so the math and
-run_parameters.json have one representation. The conversion needs the
-gradient at the spillway (`tilt_factor`), so the parse functions take it.
+Profile families: `linear` (just the gradient at the spillway, `tilt_factor`),
+`quadratic` (a `rate_of_increase` k of that gradient per km) and `polynomial`
+(a `formula` of terms `a x^p`, p = 2..5, parsed by api/formula.py into the
+coefficients c2..cN the backend uses). The backend only ever sees the canonical
+numbers -- k, or the coefficient list -- so the math and run_parameters.json have
+one representation; run_parameters.json also keeps the formula as typed.
 
 Direction types: `azimuth` (spec 4), `vectors` (spec 5, VECTOR_FIELD_SPEC.md) and
 `points` (spec 6, SHORE_POINT_SURFACE_SPEC.md: a trend surface fitted to shore
 points, whose magnitude comes from the data -- so the top-level `profile` and
-`hinge` must be absent, and neither tilt_azimuth nor tilt_factor is needed). In `vectors` mode each vector may carry a
-custom tilt (linear or quadratic, a *local* gradient at the vector's own
-location; a quadratic's curvature takes the same two forms as the global
-profile, with `second_gradient` relative to the vector). The global `profile` is
-required only when the direction is `azimuth` or some vector uses it
-(`custom: null`); when every vector is custom it is ignored and returned as None.
-The tilt_azimuth / tilt_factor requirement rules live here too, so /api/process
-and the preview endpoints give the same messages.
+`hinge` must be absent, and neither tilt_azimuth nor tilt_factor is needed). In
+`vectors` mode the vectors only give directions: magnitude always comes from the one
+global `profile` (and `tilt_factor`), so the `profile` is required for `azimuth`
+and `vectors`. The tilt_azimuth / tilt_factor requirement rules live here too, so
+/api/process and the preview endpoints give the same messages.
 """
 import json
 import math
@@ -32,6 +30,7 @@ from typing import Any, Union
 
 from pydantic import BaseModel, ConfigDict, StrictFloat, StrictInt, ValidationError
 
+from api.formula import FormulaError, parse_profile_formula
 from backend.uplift import FAMILIES, HINGE_MODES
 from backend.uplift_surface import (
     DEFAULT_EXTRAPOLATION, DEFAULT_HINGE_MODE as DEFAULT_SURFACE_HINGE, EXTRAPOLATION_MODES,
@@ -46,7 +45,6 @@ SUPPORTED_DIRECTION_TYPES = ("azimuth", "vectors", "points")
 MAX_VECTORS = 200
 MAX_POINTS = 5000
 MAX_POINT_LABEL_LENGTH = 100
-CUSTOM_FAMILIES = ("linear", "quadratic")
 MAX_EXTRA_COEFFICIENTS = 4  # c2..c5 (degree 2-5)
 
 NATURAL_REMOVED_MESSAGE = (
@@ -69,24 +67,11 @@ class _Strict(BaseModel):
 
 # The literal-valued fields are typed Any and checked by hand below, so each
 # gets a specific message instead of Pydantic's generic "input should be ...".
-class SecondGradient(_Strict):
-    gradient_m_per_km: Number
-    distance_km: Number
-
-
-class CustomTilt(_Strict):
-    family: Any
-    local_gradient: Number
-    rate_of_increase: Number | None = None
-    second_gradient: SecondGradient | None = None
-
-
 class VectorModel(_Strict):
     lat: Number
     lon: Number
     azimuth_deg: Number
     range_km: Number | None = None
-    custom: CustomTilt | None = None
 
 
 class PointModel(_Strict):
@@ -109,8 +94,7 @@ class Direction(_Strict):
 class Profile(_Strict):
     family: Any
     rate_of_increase: Number | None = None
-    second_gradient: SecondGradient | None = None
-    coefficients: list[Number] | None = None
+    formula: Any = None  # a string, checked by hand (api/formula.py)
 
 
 class Hinge(_Strict):
@@ -121,7 +105,7 @@ class Hinge(_Strict):
 class TiltModel(_Strict):
     version: Any
     direction: Direction
-    profile: Profile | None = None  # required unless every vector is custom (see module docstring)
+    profile: Profile | None = None  # required for `azimuth` and `vectors`; absent for `points`
     hinge: Hinge | None = None  # absent = 'origin' (the default for every family)
 
 
@@ -139,42 +123,7 @@ def _format_validation_error(err: ValidationError) -> str:
     return f"tilt_model.{where}: {first['msg']}."
 
 
-def _quadratic_rate(rate, second, coefficients, gradient_at_origin, gradient_name, who,
-                    subject="A quadratic profile") -> float:
-    """
-    A quadratic's canonical rate k, from whichever form was supplied.
-    `gradient_at_origin` is the gradient the second gradient is measured against:
-    tilt_factor for the global profile, local_gradient for a vector's custom tilt
-    (`gradient_name` says which, for the message); `who` prefixes messages.
-    """
-    if coefficients is not None:
-        raise TiltModelError(f"{who}{subject} does not take coefficients.")
-    if rate is not None and second is not None:
-        raise TiltModelError(
-            f"{who}{subject} takes either rate_of_increase or second_gradient, not both."
-        )
-    if rate is None and second is None:
-        raise TiltModelError(f"{who}{subject} requires rate_of_increase or second_gradient.")
-    if rate is not None:
-        if not _finite(rate):
-            raise TiltModelError(f"{who}{subject} requires a finite rate_of_increase.")
-        return float(rate)
-
-    if not _finite(second.distance_km) or second.distance_km <= 0:
-        raise TiltModelError(f"{who}second_gradient.distance_km must be finite and > 0.")
-    if not _finite(second.gradient_m_per_km):
-        raise TiltModelError(f"{who}second_gradient.gradient_m_per_km must be finite.")
-    if not (isinstance(gradient_at_origin, (int, float)) and math.isfinite(gradient_at_origin)):
-        raise TiltModelError(NON_FINITE_MESSAGE if gradient_name == "tilt_factor"
-                             else f"{who}custom.local_gradient must be finite.")
-    # g(d) = gradient_at_origin + k d, so g(distance) = gradient  =>  k as below.
-    k = (second.gradient_m_per_km - gradient_at_origin) / second.distance_km
-    if not math.isfinite(k):
-        raise TiltModelError(f"{who}second_gradient gives a non-finite rate_of_increase.")
-    return float(k)
-
-
-def _validate_vector(i, v: VectorModel, tilt_factor) -> dict:
+def _validate_vector(i, v: VectorModel) -> dict:
     who = f"Vector {i + 1}: "
     if not _finite(v.lat) or not -90 <= v.lat <= 90:
         raise TiltModelError(f"{who}lat must be between -90 and 90.")
@@ -185,35 +134,9 @@ def _validate_vector(i, v: VectorModel, tilt_factor) -> dict:
     if v.range_km is not None and (not _finite(v.range_km) or v.range_km <= 0):
         raise TiltModelError(f"{who}range_km, if given, must be finite and > 0.")
 
-    custom = None
-    c = v.custom
-    if c is not None:
-        if c.family not in CUSTOM_FAMILIES:
-            raise TiltModelError(f"{who}custom.family must be one of {list(CUSTOM_FAMILIES)}.")
-        if not _finite(c.local_gradient):
-            raise TiltModelError(f"{who}custom.local_gradient must be finite.")
-        rate = None
-        if c.family == "linear":
-            if c.rate_of_increase is not None or c.second_gradient is not None:
-                raise TiltModelError(
-                    f"{who}a linear custom tilt takes neither rate_of_increase nor second_gradient."
-                )
-        else:
-            rate = _quadratic_rate(c.rate_of_increase, c.second_gradient, None,
-                                   float(c.local_gradient), "local_gradient", who, subject="a quadratic custom tilt")
-        custom = {
-            "family": c.family,
-            "local_gradient": float(c.local_gradient),
-            "rate_of_increase": rate,
-            "second_gradient": None if c.second_gradient is None else {
-                "gradient_m_per_km": float(c.second_gradient.gradient_m_per_km),
-                "distance_km": float(c.second_gradient.distance_km),
-            },
-        }
     return {
         "lat": float(v.lat), "lon": float(v.lon), "azimuth_deg": float(v.azimuth_deg),
         "range_km": None if v.range_km is None else float(v.range_km),
-        "custom": custom,
     }
 
 
@@ -264,11 +187,11 @@ def _validate_points_direction(direction: Direction) -> dict:
             "extrapolation": extrapolation}
 
 
-def require_direction_inputs(direction_type, tilt_azimuth, tilt_factor, first_global_vector=None):
+def require_direction_inputs(direction_type, tilt_azimuth, tilt_factor):
     """
     The tilt_azimuth / tilt_factor requirement rules. `direction_type` is None
-    for a basic run (no tilt_model). `first_global_vector` is the 1-based number
-    of the first vector using the global profile (None when none does). A
+    for a basic run (no tilt_model). A `vectors` model needs the gradient at the
+    spillway (its directions come from the vectors, so no single azimuth); a
     `points` model needs neither field (only non-finite values are rejected).
     Raises TiltModelError naming the condition that applied.
     """
@@ -278,11 +201,8 @@ def require_direction_inputs(direction_type, tilt_azimuth, tilt_factor, first_gl
             raise TiltModelError(f"tilt_azimuth is required for {why}.")
         if tilt_factor is None:
             raise TiltModelError(f"tilt_factor (gradient at the spillway) is required for {why}.")
-    elif first_global_vector is not None and tilt_factor is None:
-        raise TiltModelError(
-            "tilt_factor (global gradient at the spillway) is required because vector "
-            f"{first_global_vector} uses the global profile."
-        )
+    elif direction_type == "vectors" and tilt_factor is None:
+        raise TiltModelError("tilt_factor (gradient at the spillway) is required for a multi-direction model.")
     for name, value in (("tilt_azimuth", tilt_azimuth), ("tilt_factor", tilt_factor)):
         if value is not None and not math.isfinite(value):
             raise TiltModelError(NON_FINITE_MESSAGE)
@@ -295,11 +215,8 @@ def validate_tilt_model(obj: Any, tilt_factor, tilt_azimuth=None) -> dict:
     `tilt_factor` (and, for the azimuth direction, `tilt_azimuth`) may be None
     where the requirement rules allow it -- see require_direction_inputs.
 
-    For a quadratic given as a second_gradient, the returned profile carries the
-    derived `rate_of_increase` (what the backend uses) alongside the
-    `second_gradient` as supplied; for a rate it carries `second_gradient: None`.
-    Vector custom tilts are returned the same way. In `vectors` mode with every
-    vector custom the returned `profile` is None (the global profile is unused).
+    A polynomial profile is returned with its `coefficients` (c2..cN, parsed from
+    the `formula`, which is kept as typed); a quadratic with its `rate_of_increase`.
     """
     if not isinstance(obj, dict):
         raise TiltModelError("tilt_model must be a JSON object.")
@@ -318,7 +235,6 @@ def validate_tilt_model(obj: Any, tilt_factor, tilt_azimuth=None) -> dict:
         )
 
     vectors = None
-    first_global = None
     points_direction = None
     if direction_type != "points":
         stray = [k for k in ("points", "order", "hinge", "extrapolation") if getattr(model.direction, k) is not None]
@@ -338,21 +254,17 @@ def validate_tilt_model(obj: Any, tilt_factor, tilt_azimuth=None) -> dict:
             raise TiltModelError("tilt_model.direction.vectors is required when direction.type is 'vectors'.")
         if not 1 <= len(raw) <= MAX_VECTORS:
             raise TiltModelError(f"tilt_model.direction.vectors must contain 1 to {MAX_VECTORS} vectors.")
-        vectors = [_validate_vector(i, v, tilt_factor) for i, v in enumerate(raw)]
-        first_global = next((i + 1 for i, v in enumerate(vectors) if v["custom"] is None), None)
+        vectors = [_validate_vector(i, v) for i, v in enumerate(raw)]
     elif model.direction.vectors is not None:
         raise TiltModelError("tilt_model.direction.vectors is only allowed when direction.type is 'vectors'.")
 
-    require_direction_inputs(direction_type, tilt_azimuth, tilt_factor, first_global)
+    require_direction_inputs(direction_type, tilt_azimuth, tilt_factor)
 
     profile_out = None
-    uses_profile = direction_type == "azimuth" or first_global is not None
-    if uses_profile:
-        profile = model.profile
-        if profile is None:
-            because = "" if direction_type == "azimuth" else f" because vector {first_global} uses the global profile"
-            raise TiltModelError(f"tilt_model.profile is required{because}.")
-        profile_out = _validate_profile(profile, tilt_factor)
+    if direction_type != "points":
+        if model.profile is None:
+            raise TiltModelError("tilt_model.profile is required.")
+        profile_out = _validate_profile(model.profile)
 
     hinge = model.hinge
     if hinge is not None:
@@ -383,38 +295,38 @@ def validate_tilt_model(obj: Any, tilt_factor, tilt_azimuth=None) -> dict:
     }
 
 
-def _validate_profile(profile: Profile, tilt_factor) -> dict:
+def _validate_profile(profile: Profile) -> dict:
     family = profile.family
     if family not in FAMILIES:
         raise TiltModelError(f"tilt_model.profile.family must be one of {list(FAMILIES)}.")
 
-    rate, coeffs, second = profile.rate_of_increase, profile.coefficients, profile.second_gradient
+    rate, formula = profile.rate_of_increase, profile.formula
+    coeffs = None
     if family == "linear":
-        if rate is not None or coeffs is not None or second is not None:
-            raise TiltModelError(
-                "A linear profile takes none of rate_of_increase, second_gradient or coefficients."
-            )
+        if rate is not None or formula is not None:
+            raise TiltModelError("A linear profile takes neither rate_of_increase nor formula.")
     elif family == "quadratic":
-        rate = _quadratic_rate(rate, second, coeffs, tilt_factor, "tilt_factor", "")
+        if formula is not None:
+            raise TiltModelError("A quadratic profile does not take a formula; use rate_of_increase.")
+        if rate is None:
+            raise TiltModelError("A quadratic profile requires rate_of_increase.")
+        if not _finite(rate):
+            raise TiltModelError("A quadratic profile requires a finite rate_of_increase.")
     else:  # polynomial
         if rate is not None:
-            raise TiltModelError("A polynomial profile does not take rate_of_increase.")
-        if second is not None:
-            raise TiltModelError("A polynomial profile does not take second_gradient.")
-        if not coeffs or len(coeffs) > MAX_EXTRA_COEFFICIENTS or not all(_finite(c) for c in coeffs):
-            raise TiltModelError(
-                f"A polynomial profile requires 1 to {MAX_EXTRA_COEFFICIENTS} finite coefficients "
-                f"(c2 to c{MAX_EXTRA_COEFFICIENTS + 1})."
-            )
+            raise TiltModelError("A polynomial profile does not take rate_of_increase; use formula.")
+        if formula is None:
+            raise TiltModelError("A polynomial profile requires a formula.")
+        try:
+            coeffs = parse_profile_formula(formula)
+        except FormulaError as e:
+            raise TiltModelError(f"tilt_model.profile.formula: {e}") from None
 
     return {
         "family": family,
         "rate_of_increase": None if rate is None else float(rate),
-        "second_gradient": None if second is None else {
-            "gradient_m_per_km": float(second.gradient_m_per_km),
-            "distance_km": float(second.distance_km),
-        },
-        "coefficients": None if coeffs is None else [float(c) for c in coeffs],
+        "formula": formula.strip() if family == "polynomial" else None,
+        "coefficients": coeffs,
     }
 
 

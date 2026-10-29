@@ -50,7 +50,7 @@ describe('useProfilePreview', () => {
       tilt_model: {
         version: 1,
         direction: { type: 'azimuth' },
-        profile: { family: 'linear', rate_of_increase: null, second_gradient: null, coefficients: null },
+        profile: { family: 'linear', rate_of_increase: null, formula: null },
         hinge: { mode: 'origin', distance_km: null }
       },
       origin: null,
@@ -91,7 +91,7 @@ describe('useProfilePreview', () => {
     profilePreview.mockClear()
 
     editAdvanced({
-      profile: { ...ctx.formState.advanced.profile, family: 'quadratic', curvatureInput: 'rate', rateOfIncrease: 'abc' }
+      profile: { ...ctx.formState.advanced.profile, family: 'quadratic', rateOfIncrease: 'abc' }
     })
     await advance(PREVIEW_DEBOUNCE_MS * 3)
     expect(profilePreview).not.toHaveBeenCalled()
@@ -101,26 +101,22 @@ describe('useProfilePreview', () => {
     await advance(PREVIEW_DEBOUNCE_MS + 10)
     expect(profilePreview).toHaveBeenCalledTimes(1)
     expect(profilePreview.mock.calls[0][0].tilt_model.profile).toEqual({
-      family: 'quadratic', rate_of_increase: 0.004, second_gradient: null, coefficients: null
+      family: 'quadratic', rate_of_increase: 0.004, formula: null
     })
   })
 
-  it('sends a second gradient (and no rate) while that form is active', async () => {
-    editAdvanced({
-      profile: {
-        ...ctx.formState.advanced.profile,
-        family: 'quadratic',
-        curvatureInput: 'secondGradient',
-        secondGradient: '1.2',
-        secondGradientDistanceKm: '150'
-      }
-    })
+  it('sends the polynomial formula (and no rate) while that family is active; no request while it is malformed', async () => {
+    editAdvanced({ profile: { ...ctx.formState.advanced.profile, family: 'polynomial', formula: '2e-4 x' } })
+    profilePreview.mockClear()
+    await advance(PREVIEW_DEBOUNCE_MS * 3)
+    expect(profilePreview).not.toHaveBeenCalled() // an exponent is missing
+
+    editAdvanced({ profile: { ...ctx.formState.advanced.profile, formula: '2e-4 x^2 - 1e-7 x^3' } })
     await advance(PREVIEW_DEBOUNCE_MS + 10)
     expect(profilePreview.mock.calls.at(-1)[0].tilt_model.profile).toEqual({
-      family: 'quadratic',
+      family: 'polynomial',
       rate_of_increase: null,
-      second_gradient: { gradient_m_per_km: 1.2, distance_km: 150 },
-      coefficients: null
+      formula: '2e-4 x^2 - 1e-7 x^3'
     })
   })
 

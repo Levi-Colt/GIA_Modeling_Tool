@@ -4,15 +4,12 @@ import {
   DEFAULT_PROFILE,
   HINGE_MODES,
   buildTiltModel,
-  curvatureForm,
   describeTiltModel,
-  extraCoefficientCount,
   formatNumber,
   guardNote,
   normalizeHingeMode,
   parseFiniteNumber,
   parsePositiveNumber,
-  parseSecondGradient,
   tiltModelIssues
 } from './tiltModel.js'
 
@@ -69,52 +66,33 @@ describe('hinge modes', () => {
   })
 })
 
-describe('extraCoefficientCount / curvatureForm / parseSecondGradient', () => {
-  it('clamps the coefficient count to degree 2-5', () => {
-    expect(extraCoefficientCount({ degree: 2 })).toBe(1)
-    expect(extraCoefficientCount({ degree: 5 })).toBe(4)
-    expect(extraCoefficientCount({ degree: 99 })).toBe(4)
-    expect(extraCoefficientCount({ degree: 'x' })).toBe(2)
-  })
-
-  it('curvature defaults to the second-gradient form unless explicitly "rate"', () => {
-    expect(DEFAULT_PROFILE.curvatureInput).toBe('secondGradient')
-    expect(curvatureForm({})).toBe('secondGradient')
-    expect(curvatureForm({ curvatureInput: 'rate' })).toBe('rate')
-    expect(curvatureForm({ curvatureInput: 'junk' })).toBe('secondGradient')
-  })
-
-  it('parses a second gradient only when both fields are valid', () => {
-    expect(parseSecondGradient({ secondGradient: '1.2', secondGradientDistanceKm: '150' })).toEqual({
-      gradient: 1.2,
-      distanceKm: 150
-    })
-    expect(parseSecondGradient({ secondGradient: '1.2', secondGradientDistanceKm: '0' })).toBeNull()
-    expect(parseSecondGradient({ secondGradient: '', secondGradientDistanceKm: '150' })).toBeNull()
+describe('the profile defaults', () => {
+  it('are empty fields: a rate and a formula, nothing pre-filled', () => {
+    expect(DEFAULT_PROFILE).toEqual({ family: 'linear', rateOfIncrease: '', formula: '' })
   })
 })
 
-describe('tiltModelIssues (only the active curvature form is required)', () => {
+describe('tiltModelIssues (only the active family is required)', () => {
   it('is clean for the default linear profile', () => {
     expect(tiltModelIssues(adv())).toEqual([])
   })
 
-  it('second-gradient form: needs the gradient and a positive distance', () => {
+  it('quadratic: needs a finite rate; a typed formula is irrelevant', () => {
     const q = (patch) => tiltModelIssues(adv({ family: 'quadratic', ...patch }))
-    expect(q({})).toHaveLength(2)
-    expect(q({ secondGradient: '1.2' })).toEqual(['a distance for the second gradient (greater than 0)'])
-    expect(q({ secondGradient: '1.2', secondGradientDistanceKm: '0' })).toHaveLength(1)
-    expect(q({ secondGradient: '1.2', secondGradientDistanceKm: '150' })).toEqual([])
-    // A junk rate in the hidden form is irrelevant.
-    expect(q({ secondGradient: '1.2', secondGradientDistanceKm: '150', rateOfIncrease: 'abc' })).toEqual([])
-  })
-
-  it('rate form: needs a finite rate; the hidden second-gradient fields are irrelevant', () => {
-    const q = (patch) => tiltModelIssues(adv({ family: 'quadratic', curvatureInput: 'rate', ...patch }))
     expect(q({})).toEqual(['a rate of increase (a number)'])
     expect(q({ rateOfIncrease: 'abc' })).toHaveLength(1)
     expect(q({ rateOfIncrease: '0' })).toEqual([])
-    expect(q({ rateOfIncrease: '4e-3', secondGradient: 'junk', secondGradientDistanceKm: '-5' })).toEqual([])
+    expect(q({ rateOfIncrease: '4e-3', formula: 'junk' })).toEqual([])
+  })
+
+  it('polynomial: needs a formula that parses, and says why when it does not', () => {
+    const q = (patch) => tiltModelIssues(adv({ family: 'polynomial', ...patch }))
+    expect(q({})).toEqual(['a polynomial formula'])
+    expect(q({ formula: '2e-4 x^2' })).toEqual([])
+    expect(q({ formula: '2e-4 x^2', rateOfIncrease: 'abc' })).toEqual([])
+    expect(q({ formula: '2e-4 x^7' })).toEqual([
+      'a valid polynomial formula (Exponents must be whole numbers from 2 to 5.)'
+    ])
   })
 
   it('a distance hinge needs a positive distance', () => {
@@ -125,28 +103,11 @@ describe('tiltModelIssues (only the active curvature form is required)', () => {
 })
 
 describe('buildTiltModel', () => {
-  it('sends only the active curvature form', () => {
-    const rate = buildTiltModel(
-      adv({
-        family: 'quadratic', curvatureInput: 'rate', rateOfIncrease: '4e-3',
-        secondGradient: '9', secondGradientDistanceKm: '9'
-      })
-    )
-    expect(rate.profile).toEqual({
-      family: 'quadratic', rate_of_increase: 0.004, second_gradient: null, coefficients: null
-    })
-    const second = buildTiltModel(
-      adv({
-        family: 'quadratic', curvatureInput: 'secondGradient', rateOfIncrease: '7',
-        secondGradient: '1.2', secondGradientDistanceKm: '150'
-      })
-    )
-    expect(second.profile).toEqual({
-      family: 'quadratic',
-      rate_of_increase: null,
-      second_gradient: { gradient_m_per_km: 1.2, distance_km: 150 },
-      coefficients: null
-    })
+  it('sends only the active family\'s field', () => {
+    const quad = buildTiltModel(adv({ family: 'quadratic', rateOfIncrease: '4e-3', formula: '1 x^2' }))
+    expect(quad.profile).toEqual({ family: 'quadratic', rate_of_increase: 0.004, formula: null })
+    const poly = buildTiltModel(adv({ family: 'polynomial', rateOfIncrease: '7', formula: '2e-4 x^2' }))
+    expect(poly.profile).toEqual({ family: 'polynomial', rate_of_increase: null, formula: '2e-4 x^2' })
   })
 
   it("defaults the hinge to 'origin' for every family", () => {
@@ -157,26 +118,24 @@ describe('buildTiltModel', () => {
 })
 
 describe('describeTiltModel', () => {
-  it('quadratic by second gradient, with the guard clause', () => {
-    const a = adv({ family: 'quadratic', secondGradient: '1.2', secondGradientDistanceKm: '150' }, { mode: 'none' })
-    expect(describeTiltModel(a, -53.9, 'guard')).toBe(
-      'Quadratic, second gradient 1.2 m/km at 150 km · hinge none, zero gradient at −53.9 km'
-    )
+  it('quadratic, with the guard clause', () => {
+    const a = adv({ family: 'quadratic', rateOfIncrease: '4e-3' }, { mode: 'none' })
+    expect(describeTiltModel(a, -53.9, 'guard')).toBe('Quadratic, k = 4e-3 · hinge none, zero gradient at −53.9 km')
   })
 
-  it('quadratic by rate, hinge at the spillway (no clause when the mode set the clamp)', () => {
-    const a = adv({ family: 'quadratic', curvatureInput: 'rate', rateOfIncrease: '4e-3' })
+  it('quadratic, hinge at the spillway (no clause when the mode set the clamp)', () => {
+    const a = adv({ family: 'quadratic', rateOfIncrease: '4e-3' })
     expect(describeTiltModel(a, 0, 'mode')).toBe('Quadratic, k = 4e-3 · hinge at spillway')
   })
 
-  it('linear and distance hinge; polynomial names its degree', () => {
+  it('linear and distance hinge; a polynomial shows its formula', () => {
     expect(describeTiltModel(adv(), 0, 'mode')).toBe('Linear · hinge at spillway')
     expect(describeTiltModel(adv({}, { mode: 'distance', distanceKm: '30' }), -30, 'mode')).toBe(
       'Linear · hinge 30 km behind spillway'
     )
-    expect(describeTiltModel(adv({ family: 'polynomial', degree: 4 }, { mode: 'none' }), null, null)).toBe(
-      'Polynomial, degree 4 · hinge none'
-    )
+    expect(
+      describeTiltModel(adv({ family: 'polynomial', formula: ' 2e-4 x^2 - 1e-7 x^3 ' }, { mode: 'none' }), null, null)
+    ).toBe('Polynomial, 2e-4 x^2 - 1e-7 x^3 · hinge none')
   })
 
   it('drops the guard clause without a preview', () => {

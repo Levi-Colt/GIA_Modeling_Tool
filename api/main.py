@@ -98,7 +98,6 @@ def _public_diagnostics(diagnostics: dict) -> dict:
     """The JSON-safe part of a vector model's diagnostics (drops the phi grid)."""
     g = diagnostics["grid"]
     return {
-        "case": diagnostics["case"],
         "misfit_deg": diagnostics["misfit_deg"],
         "misfit_rms_deg": diagnostics["misfit_rms_deg"],
         "misfit_max_deg": diagnostics["misfit_max_deg"],
@@ -192,13 +191,13 @@ async def process(
     # tilt_model below, so a direct in-process call that omits one gets a real None.
     tilt_azimuth: Annotated[
         float | None,
-        Form(description="Tilt direction, degrees (required unless the model's direction is 'vectors')"),
+        Form(description="Tilt direction, degrees (required unless the model's direction is 'vectors' or 'points')"),
     ] = None,
     tilt_factor: Annotated[
         float | None,
         Form(description=(
-            "Meters of elevation change per km at the spillway (required unless every vector has "
-            "a custom tilt)"
+            "Meters of elevation change per km at the spillway (required unless the model's "
+            "direction is 'points')"
         )),
     ] = None,
     target_elevation: float = Form(..., description="Paleo-elevation to contour, meters"),

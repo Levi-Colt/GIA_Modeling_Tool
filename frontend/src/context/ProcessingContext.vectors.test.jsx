@@ -43,7 +43,7 @@ describe('persistence', () => {
   it('vectors and the direction source persist across a reload; the selection does not', () => {
     const first = mount()
     const a = newVector({ lat: '45', lon: '-105', azimuthDeg: '30' })
-    const b = newVector({ lat: '46', lon: '-104', azimuthDeg: '40', tilt: 'custom', custom: { localGradient: '0.6' } })
+    const b = newVector({ lat: '46', lon: '-104', azimuthDeg: '40', rangeKm: '80' })
     act(() => {
       ctx.updateAdvanced({ directionSource: 'vectors' })
       ctx.setVectors([a, b])
@@ -64,7 +64,7 @@ describe('persistence', () => {
     mount()
     expect(ctx.formState.advanced.directionSource).toBe('vectors')
     expect(ids()).toEqual([a.id, b.id]) // stable ids survive
-    expect(ctx.formState.advanced.vectors[1]).toMatchObject({ tilt: 'custom', custom: { localGradient: '0.6' } })
+    expect(ctx.formState.advanced.vectors[1]).toMatchObject({ azimuthDeg: '40', rangeKm: '80' })
     expect(ctx.formState.selectedVectorId).toBeNull()
     expect(ctx.formState.mapEditMode).toBe('none')
     expect(ctx.formState.upliftPreview).toBeNull()
@@ -89,8 +89,22 @@ describe('persistence', () => {
     mount()
     expect(ctx.formState.advanced.directionSource).toBe('azimuth')
     expect(ctx.formState.advanced.vectors).toHaveLength(1)
-    expect(ctx.formState.advanced.vectors[0]).toMatchObject({ lat: '45', lon: '', tilt: 'global' })
+    expect(ctx.formState.advanced.vectors[0]).toMatchObject({ lat: '45', lon: '', azimuthDeg: '', rangeKm: '' })
     expect(ctx.formState.advanced.vectors[0].id).toMatch(/^v_/)
+  })
+
+  it('drops the per-vector tilt an older save carried', () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        advanced: { directionSource: 'vectors', vectors: [{ lat: '45', lon: '-105', azimuthDeg: '30', tilt: 'custom', custom: { localGradient: '0.6' } }] }
+      })
+    )
+    mount()
+    const [v] = ctx.formState.advanced.vectors
+    expect(v).not.toHaveProperty('tilt')
+    expect(v).not.toHaveProperty('custom')
+    expect(v.azimuthDeg).toBe('30')
   })
 
   it('switching modes never touches the vectors', () => {

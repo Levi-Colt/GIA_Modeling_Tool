@@ -118,24 +118,13 @@ describe('getReadiness: Advanced tilt model', () => {
     ...completeForm,
     mode: 'advanced',
     advanced: {
-      profile: {
-        family: 'linear',
-        curvatureInput: 'secondGradient',
-        rateOfIncrease: '',
-        secondGradient: '',
-        secondGradientDistanceKm: '',
-        coefficients: ['', '', '', ''],
-        degree: 3,
-        ...profile
-      },
+      profile: { family: 'linear', rateOfIncrease: '', formula: '', ...profile },
       hinge: { mode: 'origin', distanceKm: '', ...hinge }
     }
   })
   const tiltReasons = (form) => check(form).missing.filter((m) => m.section === 'tilt').map((m) => m.text)
-  const byRate = (rateOfIncrease, extra = {}) =>
-    advancedForm({ family: 'quadratic', curvatureInput: 'rate', rateOfIncrease, ...extra })
-  const bySecond = (secondGradient, secondGradientDistanceKm, extra = {}) =>
-    advancedForm({ family: 'quadratic', curvatureInput: 'secondGradient', secondGradient, secondGradientDistanceKm, ...extra })
+  const byRate = (rateOfIncrease, extra = {}) => advancedForm({ family: 'quadratic', rateOfIncrease, ...extra })
+  const byFormula = (formula, extra = {}) => advancedForm({ family: 'polynomial', formula, ...extra })
 
   it('is ready for the default linear profile', () => {
     expect(check(advancedForm()).ready).toBe(true)
@@ -150,33 +139,25 @@ describe('getReadiness: Advanced tilt model', () => {
     }
   })
 
-  it('quadratic by second gradient requires a finite gradient and a positive distance', () => {
-    expect(tiltReasons(bySecond('', ''))).toHaveLength(2)
-    expect(tiltReasons(bySecond('1.2', ''))).toHaveLength(1)
-    expect(tiltReasons(bySecond('', '150'))).toHaveLength(1)
-    for (const badDistance of ['0', '-5', 'abc']) expect(check(bySecond('1.2', badDistance)).ready).toBe(false)
-    expect(check(bySecond('1.2', '150')).ready).toBe(true)
-    expect(check(bySecond('-0.3', '150')).ready).toBe(true)
+  it('only the active family is required: a junk formula is ignored by a quadratic and vice versa', () => {
+    expect(check(byRate('4e-3', { formula: 'junk' })).ready).toBe(true)
+    expect(check(byFormula('2e-4 x^2', { rateOfIncrease: 'abc' })).ready).toBe(true)
+    expect(check(advancedForm({ family: 'linear', rateOfIncrease: 'abc', formula: 'junk' })).ready).toBe(true)
   })
 
-  it('only the active curvature form is required', () => {
-    // Active = rate: the (empty/junk) second-gradient fields are ignored.
-    expect(check(byRate('4e-3', { secondGradient: 'junk', secondGradientDistanceKm: '-1' })).ready).toBe(true)
-    // Active = second gradient: the (empty/junk) rate is ignored.
-    expect(check(bySecond('1.2', '150', { rateOfIncrease: 'abc' })).ready).toBe(true)
-    // ...and each active form is still enforced when the other is filled in.
-    expect(check(byRate('', { secondGradient: '1.2', secondGradientDistanceKm: '150' })).ready).toBe(false)
-    expect(check(bySecond('', '', { rateOfIncrease: '4e-3' })).ready).toBe(false)
+  it('polynomial requires a formula that parses', () => {
+    for (const bad of ['', '  ', 'abc', '2e-4 x', '2e-4 x^1', '2e-4 x^6', '2e-4 x^2 + 3', '2e-4 x^2 3e-5 x^3']) {
+      expect(tiltReasons(byFormula(bad))).toHaveLength(1)
+      expect(check(byFormula(bad)).ready).toBe(false)
+    }
+    for (const good of ['2e-4 x^2', '2e-4 x^2 - 1.5e-7 x^3', 'x^4', '-3e-5*x^3', '1e-9 x**5']) {
+      expect(check(byFormula(good)).ready).toBe(true)
+    }
   })
 
-  it('polynomial requires c2..c_degree all finite, and ignores slots past the degree', () => {
-    const poly = (degree, coefficients) => advancedForm({ family: 'polynomial', degree, coefficients })
-    expect(check(poly(3, ['0.1', '', '', ''])).ready).toBe(false)
-    expect(check(poly(3, ['0.1', 'x', '', ''])).ready).toBe(false)
-    expect(check(poly(3, ['0.1', '0.2', '', ''])).ready).toBe(true)
-    expect(check(poly(2, ['0.1', 'junk', 'junk', 'junk'])).ready).toBe(true)
-    expect(check(poly(5, ['1', '2', '3', ''])).ready).toBe(false)
-    expect(check(poly(5, ['1', '2', '3', '4'])).ready).toBe(true)
+  it('names the formula problem in the reason', () => {
+    expect(tiltReasons(byFormula(''))).toEqual(['a polynomial formula'])
+    expect(tiltReasons(byFormula('2e-4 x'))[0]).toMatch(/^a valid polynomial formula \(Every term needs an exponent/)
   })
 
   it('a distance hinge requires distanceKm > 0; other modes never look at it', () => {
@@ -188,14 +169,14 @@ describe('getReadiness: Advanced tilt model', () => {
   })
 
   it('keys every new reason to the tilt section', () => {
-    const { missing } = check(bySecond('', '', { family: 'quadratic' }))
-    expect(missing.map((m) => m.section)).toEqual(['tilt', 'tilt'])
+    const { missing } = check(byRate(''))
+    expect(missing.map((m) => m.section)).toEqual(['tilt'])
     const both = check({ ...byRate(''), advanced: { ...byRate('').advanced, hinge: { mode: 'distance', distanceKm: '' } } })
     expect(both.missing.map((m) => m.section)).toEqual(['tilt', 'tilt'])
   })
 
   it('Basic readiness ignores advanced.profile and advanced.hinge entirely', () => {
-    const bad = advancedForm({ family: 'quadratic', curvatureInput: 'rate', rateOfIncrease: 'abc' }, { mode: 'distance', distanceKm: '' })
+    const bad = advancedForm({ family: 'quadratic', rateOfIncrease: 'abc' }, { mode: 'distance', distanceKm: '' })
     expect(check({ ...bad, mode: 'basic' })).toEqual(check(completeForm))
     expect(check({ ...bad, mode: 'basic' }).ready).toBe(true)
   })

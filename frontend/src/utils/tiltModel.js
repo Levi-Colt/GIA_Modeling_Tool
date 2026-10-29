@@ -12,12 +12,13 @@
 // a third, 'points' (utils/shorePoints.js): the dispatchers below (tiltModelIssues,
 // buildTiltModel, describeTiltModel) branch on advanced.directionSource. In 'points'
 // mode magnitude comes from the fitted surface, so no profile or hinge exists.
-import { anyGlobal, buildVectorsDirection, isCustom, normalizeVectors, vectorIssues } from './vectors.js'
+import { buildVectorsDirection, normalizeVectors, vectorIssues } from './vectors.js'
 import { EXTRAPOLATIONS, SURFACE_HINGES, buildPointsDirection, normalizeShorePoints, pointIssues, surfaceOf } from './shorePoints.js'
-import { curvatureForm, parseFiniteNumber, parsePositiveNumber, parseSecondGradient } from './numbers.js'
+import { parseFiniteNumber, parsePositiveNumber } from './numbers.js'
+import { parseProfileFormula } from './formula.js'
 
 // Re-exported so existing importers keep working.
-export { curvatureForm, parseFiniteNumber, parsePositiveNumber, parseSecondGradient }
+export { parseFiniteNumber, parsePositiveNumber }
 
 export const DIRECTION_SOURCES = [
   { value: 'azimuth', label: 'Single azimuth' },
@@ -30,16 +31,6 @@ export const FAMILIES = [
   { value: 'linear', label: 'Linear' },
   { value: 'quadratic', label: 'Quadratic' },
   { value: 'polynomial', label: 'Polynomial' }
-]
-
-export const DEGREES = [2, 3, 4, 5]
-export const MAX_DEGREE = 5
-
-// Two ways to give a quadratic's curvature; the API converts a second gradient
-// to the canonical rate of increase.
-export const CURVATURE_INPUTS = [
-  { value: 'secondGradient', label: 'Second gradient' },
-  { value: 'rate', label: 'Rate of increase' }
 ]
 
 // There is no family-dependent "default" hinge value: the default is 'origin'
@@ -55,12 +46,8 @@ export const HINGE_MODES = [
 // state has no such keys).
 export const DEFAULT_PROFILE = {
   family: 'linear',
-  curvatureInput: 'secondGradient',
-  rateOfIncrease: '',
-  secondGradient: '',
-  secondGradientDistanceKm: '',
-  coefficients: ['', '', '', ''],
-  degree: 3
+  rateOfIncrease: '', // quadratic: the rate of increase of the gradient (m/km per km)
+  formula: '' // polynomial: terms of a x^p (utils/formula.js)
 }
 export const DEFAULT_HINGE = { mode: 'origin', distanceKm: '' }
 
@@ -93,31 +80,17 @@ export function normalizeHingeMode(mode) {
   return mode === 'distance' || mode === 'none' ? mode : 'origin'
 }
 
-// Number of c2..cN inputs the polynomial family shows / sends.
-export function extraCoefficientCount(profile) {
-  const degree = Number(profile.degree)
-  return Math.min(Math.max(Number.isInteger(degree) ? degree : 3, 2), MAX_DEGREE) - 1
-}
-
-// Only the active curvature form's fields are required.
+// Only the active family's fields are required.
 function profileIssues(profile) {
-  const issues = []
   if (profile.family === 'quadratic') {
-    if (curvatureForm(profile) === 'rate') {
-      if (parseFiniteNumber(profile.rateOfIncrease) === null) issues.push('a rate of increase (a number)')
-    } else {
-      if (parseFiniteNumber(profile.secondGradient) === null) issues.push('a second gradient (a number)')
-      if (parsePositiveNumber(profile.secondGradientDistanceKm) === null) {
-        issues.push('a distance for the second gradient (greater than 0)')
-      }
-    }
+    return parseFiniteNumber(profile.rateOfIncrease) === null ? ['a rate of increase (a number)'] : []
   }
   if (profile.family === 'polynomial') {
-    const count = extraCoefficientCount(profile)
-    const ok = profile.coefficients.slice(0, count).every((c) => parseFiniteNumber(c) !== null)
-    if (!ok) issues.push(`polynomial coefficients c₂–c${count + 1} (numbers)`)
+    const parsed = parseProfileFormula(profile.formula)
+    if (parsed.ok) return []
+    return [String(profile.formula ?? '').trim() === '' ? 'a polynomial formula' : `a valid polynomial formula (${parsed.error})`]
   }
-  return issues
+  return []
 }
 
 function hingeIssues(hinge) {
@@ -128,46 +101,29 @@ function hingeIssues(hinge) {
 
 // Reasons the tilt section isn't runnable, as plain strings (readiness.js keys
 // them to the 'tilt' section). Only relevant in Advanced mode. In vectors mode the
-// global profile's fields count only while some vector uses the global profile;
-// the hinge always applies.
+// vectors are checked as well; the one profile and hinge always apply.
 export function tiltModelIssues(advanced) {
   const { profile, hinge } = parts(advanced)
   if (directionSourceOf(advanced) === 'points') {
     return pointIssues(normalizeShorePoints(advanced?.shorePoints), surfaceOf(advanced))
   }
   if (directionSourceOf(advanced) === 'vectors') {
-    const vectors = vectorsOf(advanced)
-    return [
-      ...vectorIssues(vectors),
-      ...(anyGlobal(vectors) ? profileIssues(profile) : []),
-      ...hingeIssues(hinge)
-    ]
+    return [...vectorIssues(vectorsOf(advanced)), ...profileIssues(profile), ...hingeIssues(hinge)]
   }
   return [...profileIssues(profile), ...hingeIssues(hinge)]
 }
 
 function buildProfile(profile) {
-  const second = parseSecondGradient(profile)
-  const useRate = curvatureForm(profile) === 'rate'
   return {
     family: profile.family,
-    rate_of_increase:
-      profile.family === 'quadratic' && useRate ? parseFiniteNumber(profile.rateOfIncrease) : null,
-    second_gradient:
-      profile.family === 'quadratic' && !useRate
-        ? { gradient_m_per_km: parseFiniteNumber(profile.secondGradient), distance_km: second?.distanceKm ?? null }
-        : null,
-    coefficients:
-      profile.family === 'polynomial'
-        ? profile.coefficients.slice(0, extraCoefficientCount(profile)).map(parseFiniteNumber)
-        : null
+    rate_of_increase: profile.family === 'quadratic' ? parseFiniteNumber(profile.rateOfIncrease) : null,
+    formula: profile.family === 'polynomial' ? profile.formula.trim() : null
   }
 }
 
 // The API's `tilt_model` object. Only meaningful once tiltModelIssues is empty.
-// A quadratic sends only its active curvature form. In vectors mode the global
-// profile is omitted when every vector is custom (it is unused, and there is no
-// gradient at the spillway to build it from).
+// Each family sends only its own field: a quadratic its rate, a polynomial its
+// formula (the server parses it).
 export function buildTiltModel(advanced) {
   const { profile, hinge } = parts(advanced)
   if (directionSourceOf(advanced) === 'points') {
@@ -180,11 +136,10 @@ export function buildTiltModel(advanced) {
   const mode = normalizeHingeMode(hinge.mode)
   const hingeOut = { mode, distance_km: mode === 'distance' ? parsePositiveNumber(hinge.distanceKm) : null }
   if (directionSourceOf(advanced) === 'vectors') {
-    const vectors = vectorsOf(advanced)
     return {
       version: 1,
-      direction: buildVectorsDirection(vectors),
-      ...(anyGlobal(vectors) ? { profile: buildProfile(profile) } : {}),
+      direction: buildVectorsDirection(vectorsOf(advanced)),
+      profile: buildProfile(profile),
       hinge: hingeOut
     }
   }
@@ -209,7 +164,7 @@ export function guardNote(hingeKm) {
 }
 
 // Results-screen parameter line (Advanced only), e.g.
-// "Quadratic, second gradient 1.2 m/km at 150 km · hinge none, zero gradient at −54 km".
+// "Quadratic, k = 0.004 · hinge none, zero gradient at −54 km".
 // hingeKm / hingeSource come from the latest profile preview; without them the
 // guard clause is dropped. `fit` (points mode) is the latest fit's `selected`
 // statistics, for the R² / RMSE clause.
@@ -231,19 +186,13 @@ export function describeTiltModel(advanced, hingeKm, hingeSource, fit) {
   }
   const family = FAMILIES.find((f) => f.value === profile.family)?.label ?? profile.family
   let head = family
-  if (profile.family === 'quadratic') {
-    head +=
-      curvatureForm(profile) === 'rate'
-        ? `, k = ${profile.rateOfIncrease.trim()}`
-        : `, second gradient ${profile.secondGradient.trim()} m/km at ${profile.secondGradientDistanceKm.trim()} km`
-  }
-  if (profile.family === 'polynomial') head += `, degree ${extraCoefficientCount(profile) + 1}`
+  if (profile.family === 'quadratic') head += `, k = ${profile.rateOfIncrease.trim()}`
+  if (profile.family === 'polynomial') head += `, ${profile.formula.trim()}`
 
   if (directionSourceOf(advanced) === 'vectors') {
     const vectors = vectorsOf(advanced)
-    const custom = vectors.filter(isCustom).length
     const count = `${vectors.length} ${vectors.length === 1 ? 'vector' : 'vectors'}`
-    head = `${count}${custom ? ` (${custom} custom)` : ''}${anyGlobal(vectors) ? `, global ${head.toLowerCase()}` : ''}`
+    head = `${count}, ${head.toLowerCase()}`
   }
 
   const mode = normalizeHingeMode(hinge.mode)

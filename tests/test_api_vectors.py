@@ -1,7 +1,9 @@
 """
 API tests for `direction.type == "vectors"` (documentation/VECTOR_FIELD_SPEC.md,
 spec 5): vector validation, the relaxed tilt_azimuth / tilt_factor rules, the
-diagnostics header and run_parameters, and POST /api/uplift-preview.
+diagnostics header and run_parameters, and POST /api/uplift-preview. Vectors only
+give directions; magnitude always comes from the one global profile (per-vector
+custom tilts were removed).
 
 Calls api.main handlers directly (in-process), like the other API tests. The
 sloped fixture spans lon [-105.0, -104.9], lat [44.9, 45.0]; the run's origin
@@ -21,8 +23,8 @@ from api.main import (
 )
 
 
-def _vec(lat=44.93, lon=-104.96, az=28.0, range_km=None, custom=None):
-    return {"lat": lat, "lon": lon, "azimuth_deg": az, "range_km": range_km, "custom": custom}
+def _vec(lat=44.93, lon=-104.96, az=28.0, range_km=None):
+    return {"lat": lat, "lon": lon, "azimuth_deg": az, "range_km": range_km}
 
 
 def _vtm(vectors=None, profile="default", hinge=None):
@@ -45,18 +47,6 @@ def _azimuth_model(**profile):
         "profile": profile or {"family": "linear"},
         "hinge": {"mode": "origin", "distance_km": None},
     }
-
-
-def _second(gradient, distance):
-    return {"gradient_m_per_km": gradient, "distance_km": distance}
-
-
-def _custom_linear(g=0.4):
-    return {"family": "linear", "local_gradient": g}
-
-
-def _custom_quad(g=0.4, **form):
-    return {"family": "quadratic", "local_gradient": g, **form}
 
 
 def _run(file_path, tilt_model, tilt_factor=0.4, tilt_azimuth=None):
@@ -111,27 +101,15 @@ def _bad_cases():
         (_vtm(vectors=[_vec(range_km=-5)]), "range_km, if given, must be finite and > 0"),
         (_vtm(vectors=[{**_vec(), "extra": 1}]), "unknown key: 'direction.vectors.0.extra'"),
         (_vtm(vectors=[{**_vec(), "lat": "44.9"}]), "direction.vectors.0.lat"),
-        # custom tilts
-        (_vtm(vectors=[_vec(custom={"family": "cubic", "local_gradient": 0.4})]),
-         "Vector 1: custom.family must be one of ['linear', 'quadratic']"),
-        (_vtm(vectors=[_vec(custom={"family": "polynomial", "local_gradient": 0.4})]),
-         "custom.family must be one of"),
-        (_vtm(vectors=[_vec(custom={"family": "linear"})]), "local_gradient is required"),
-        (_vtm(vectors=[_vec(custom={"family": "linear", "local_gradient": 0.4, "rate_of_increase": 0.1})]),
-         "linear custom tilt takes neither rate_of_increase nor second_gradient"),
-        (_vtm(vectors=[_vec(custom={"family": "linear", "local_gradient": 0.4,
-                                    "second_gradient": _second(1.0, 10)})]),
-         "linear custom tilt takes neither"),
-        (_vtm(vectors=[_vec(custom=_custom_quad())]),
-         "Vector 1: a quadratic custom tilt requires rate_of_increase or second_gradient"),
-        (_vtm(vectors=[_vec(custom=_custom_quad(rate_of_increase=0.1, second_gradient=_second(1.0, 10)))]),
-         "takes either rate_of_increase or second_gradient, not both"),
-        (_vtm(vectors=[_vec(custom=_custom_quad(second_gradient=_second(1.0, 0)))]),
-         "second_gradient.distance_km must be finite and > 0"),
-        (_vtm(vectors=[_vec(custom=_custom_quad(second_gradient=_second(1.0, -3)))]),
-         "second_gradient.distance_km must be finite and > 0"),
+        # per-vector custom tilts were removed: the key is now unknown
+        (_vtm(vectors=[{**_vec(), "custom": None}]), "unknown key: 'direction.vectors.0.custom'"),
+        (_vtm(vectors=[{**_vec(), "custom": {"family": "linear", "local_gradient": 0.4}}]),
+         "unknown key: 'direction.vectors.0.custom'"),
         # global profile / hinge rules still apply
-        (_vtm(profile={"family": "quadratic"}), "requires rate_of_increase or second_gradient"),
+        (_vtm(profile={"family": "quadratic"}), "A quadratic profile requires rate_of_increase"),
+        (_vtm(profile={"family": "quadratic", "rate_of_increase": 0.1, "second_gradient": {"gradient_m_per_km": 1.0, "distance_km": 10}}),
+         "unknown key: 'profile.second_gradient'"),
+        (_vtm(profile={"family": "polynomial", "formula": "2e-4 x"}), "tilt_model.profile.formula"),
         (_vtm(hinge={"mode": "natural"}), "hinge mode 'natural' was removed"),
     ]
 
@@ -166,7 +144,7 @@ def test_vectors_run_needs_no_tilt_azimuth_and_reports_diagnostics(sloped_dem_pa
     assert params["tilt_azimuth"] is None
     assert params["tilt_model"]["direction"]["type"] == "vectors"
     d = params["diagnostics"]
-    assert d["case"] == "A" and len(d["misfit_deg"]) == 1
+    assert "case" not in d and len(d["misfit_deg"]) == 1
     assert d["misfit_max_deg"] == pytest.approx(header["misfit_max_deg"])
     assert "phi_grid" not in d
     assert (params["hinge_km"], params["hinge_source"]) == (0.0, "mode")
@@ -214,58 +192,31 @@ def test_tilt_azimuth_and_factor_are_required_for_a_basic_run(sloped_dem_path):
     assert "tilt_factor (gradient at the spillway) is required for a basic run" in exc.value.detail
 
 
-def test_tilt_factor_is_required_when_a_vector_uses_the_global_profile(sloped_dem_path):
-    model = _vtm(vectors=[_vec(custom=_custom_linear()), _vec(lon=-104.92), _vec(lon=-104.91)])
+def test_tilt_factor_is_required_for_a_vectors_model(sloped_dem_path):
     with pytest.raises(HTTPException) as exc:
-        _run(sloped_dem_path, model, tilt_factor=None)
+        _run(sloped_dem_path, _vtm(), tilt_factor=None)
     assert exc.value.status_code == 422
-    assert exc.value.detail == (
-        "tilt_factor (global gradient at the spillway) is required because vector 2 uses the global profile."
-    )
+    assert exc.value.detail == "tilt_factor (gradient at the spillway) is required for a multi-direction model."
 
 
-def test_tilt_factor_and_profile_are_optional_when_every_vector_is_custom(sloped_dem_path):
-    model = _vtm(vectors=[_vec(custom=_custom_linear(0.4)), _vec(lon=-104.92, custom=_custom_linear(0.6))],
-                 profile=None)
-    response = _run(sloped_dem_path, model, tilt_factor=None)
-    assert response.status_code == 200
-    params = _params(response)
-    assert params["tilt_factor"] is None
-    assert params["tilt_model"]["profile"] is None
-    assert params["diagnostics"]["case"] == "B"
-
-
-def test_profile_is_required_when_a_vector_uses_it(sloped_dem_path):
-    model = _vtm(vectors=[_vec(custom=_custom_linear()), _vec(lon=-104.92)], profile=None)
+def test_profile_is_required_for_a_vectors_model(sloped_dem_path):
     with pytest.raises(HTTPException) as exc:
-        _run(sloped_dem_path, model)
-    assert "tilt_model.profile is required because vector 2 uses the global profile" in exc.value.detail
+        _run(sloped_dem_path, _vtm(profile=None))
+    assert "tilt_model.profile is required" in exc.value.detail
 
 
-def test_an_unused_profile_is_ignored_when_every_vector_is_custom(sloped_dem_path):
-    # A second-gradient quadratic needs c1 (tilt_factor) to convert; unused, so not needed.
-    model = _vtm(vectors=[_vec(custom=_custom_linear())],
-                 profile={"family": "quadratic", "second_gradient": _second(1.0, 30.0)})
-    response = _run(sloped_dem_path, model, tilt_factor=None)
-    assert _params(response)["tilt_model"]["profile"] is None
+def test_a_formula_profile_drives_a_vectors_run_and_is_recorded(sloped_dem_path):
+    model = _vtm(profile={"family": "polynomial", "formula": "1e-4 x^2 - 2e-7 x^3"})
+    params = _params(_run(sloped_dem_path, model))
+    profile = params["tilt_model"]["profile"]
+    assert profile["formula"] == "1e-4 x^2 - 2e-7 x^3"
+    assert profile["coefficients"] == [1e-4, -2e-7]
 
 
 def test_non_finite_tilt_factor_with_a_vectors_model_is_422(sloped_dem_path):
     with pytest.raises(HTTPException) as exc:
         _run(sloped_dem_path, _vtm(), tilt_factor=float("nan"))
     assert "finite" in exc.value.detail
-
-
-def test_custom_second_gradient_is_relative_to_the_vector_and_recorded(sloped_dem_path):
-    # k = (gradient - local_gradient) / distance = (1.0 - 0.4) / 30 = 0.02
-    model = _vtm(vectors=[_vec(custom=_custom_quad(0.4, second_gradient=_second(1.0, 30.0)))], profile=None)
-    custom = _params(_run(sloped_dem_path, model, tilt_factor=None))["tilt_model"]["direction"]["vectors"][0]["custom"]
-    assert custom["rate_of_increase"] == pytest.approx(0.02)
-    assert custom["second_gradient"] == _second(1.0, 30.0)
-
-    by_rate = _vtm(vectors=[_vec(custom=_custom_quad(0.4, rate_of_increase=0.02))], profile=None)
-    custom = _params(_run(sloped_dem_path, by_rate, tilt_factor=None))["tilt_model"]["direction"]["vectors"][0]["custom"]
-    assert custom["rate_of_increase"] == 0.02 and custom["second_gradient"] is None
 
 
 # --- /api/uplift-preview --------------------------------------------------------------
@@ -301,16 +252,19 @@ def test_uplift_preview_reports_warnings_and_unmeasurable_vectors():
     assert out["vectors"][1]["misfit_deg"] is None
 
 
-def test_uplift_preview_needs_no_tilt_azimuth_and_supports_custom_tilts():
-    model = _vtm(vectors=[_vec(custom=_custom_linear(0.4)), _vec(lon=-104.92, custom=_custom_linear(0.9))],
-                 profile=None)
-    out = _uplift(tilt_factor=None, tilt_model=model)
+def test_uplift_preview_needs_no_tilt_azimuth():
+    out = _uplift(tilt_model=_vtm(vectors=[_vec(), _vec(lon=-104.92)]))
+    assert out["isobases"]["features"]
+
+
+def test_uplift_preview_follows_a_formula_profile():
+    out = _uplift(tilt_model=_vtm(profile={"family": "polynomial", "formula": "5e-4 x^2"}))
     assert out["isobases"]["features"]
 
 
 @pytest.mark.parametrize("override,message", [
     (dict(tilt_model=_azimuth_model(), tilt_azimuth=90.0), "use /api/profile-preview"),
-    (dict(tilt_factor=None), "tilt_factor (global gradient at the spillway) is required because vector 1"),
+    (dict(tilt_factor=None), "tilt_factor (gradient at the spillway) is required for a multi-direction model"),
     (dict(tilt_model=_vtm(vectors=[_vec(lat=95)])), "Vector 1: lat"),
     (dict(origin=[1.0]), "origin must be"),
     (dict(bounds_wgs84=[1.0, 2.0, 0.0, 3.0]), "bounds_wgs84 must be"),

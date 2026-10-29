@@ -10,8 +10,8 @@ let container
 let map
 let layer
 
-const base = { id: 'a', number: 1, lon: -105, lat: 45, azimuthDeg: 90, rangeKm: 40, lengthKm: 40, selected: false, custom: false }
-const second = { id: 'b', number: 2, lon: -104.5, lat: 45.2, azimuthDeg: 0, rangeKm: null, lengthKm: 20, selected: false, custom: true }
+const base = { id: 'a', number: 1, lon: -105, lat: 45, azimuthDeg: 90, rangeKm: 40, lengthKm: 40, selected: false }
+const second = { id: 'b', number: 2, lon: -104.5, lat: 45.2, azimuthDeg: 0, rangeKm: null, lengthKm: 20, selected: false }
 
 function callbacks() {
   return {
@@ -74,12 +74,9 @@ describe('rendering', () => {
     expect(baseMarker(1)).toBeDefined()
   })
 
-  it('custom-tilt vectors get a filled head, global ones a hollow one', () => {
+  it('every arrow has a hollow head (the vectors only give directions)', () => {
     layer.render([base, second], callbacks())
-    const [globalHead, customHead] = heads()
-    expect(globalHead.options.fill).toBe(false)
-    expect(customHead.options.fill).toBe(true)
-    expect(customHead.options.fillOpacity).toBe(1)
+    for (const head of heads()) expect(head.options.fill).toBe(false)
   })
 
   it('the selected vector is thicker and in the accent color', () => {

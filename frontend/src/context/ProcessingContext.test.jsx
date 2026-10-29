@@ -96,15 +96,7 @@ describe('persistence', () => {
       JSON.stringify({ mode: 'advanced', advanced: { sectionsOpen: { dem: false } } })
     )
     mount()
-    expect(ctx.formState.advanced.profile).toEqual({
-      family: 'linear',
-      curvatureInput: 'secondGradient',
-      rateOfIncrease: '',
-      secondGradient: '',
-      secondGradientDistanceKm: '',
-      coefficients: ['', '', '', ''],
-      degree: 3
-    })
+    expect(ctx.formState.advanced.profile).toEqual({ family: 'linear', rateOfIncrease: '', formula: '' })
     expect(ctx.formState.advanced.hinge).toEqual({ mode: 'origin', distanceKm: '' })
   })
 
@@ -121,10 +113,34 @@ describe('persistence', () => {
     )
     mount()
     expect(ctx.formState.advanced.hinge).toEqual({ mode: 'origin', distanceKm: '30' })
-    // The rest of the saved profile survives, and the new curvature keys get defaults.
+    // The rest of the saved profile survives, and the new formula key gets its default.
     expect(ctx.formState.advanced.profile.family).toBe('quadratic')
     expect(ctx.formState.advanced.profile.rateOfIncrease).toBe('4e-3')
-    expect(ctx.formState.advanced.profile.curvatureInput).toBe('secondGradient')
+    expect(ctx.formState.advanced.profile.formula).toBe('')
+  })
+
+  it('drops the retired second-gradient and coefficient inputs from an older save', () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        mode: 'advanced',
+        advanced: {
+          profile: {
+            family: 'polynomial', curvatureInput: 'secondGradient', rateOfIncrease: '',
+            secondGradient: '1.2', secondGradientDistanceKm: '150', coefficients: ['0.1', '', '', ''], degree: 3
+          }
+        }
+      })
+    )
+    mount()
+    // The coefficients are not converted: the formula comes back empty (and highlighted).
+    expect(ctx.formState.advanced.profile).toEqual({ family: 'polynomial', rateOfIncrease: '', formula: '' })
+  })
+
+  it('an unknown saved profile family falls back to linear', () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ advanced: { profile: { family: 'cubic' } } }))
+    mount()
+    expect(ctx.formState.advanced.profile.family).toBe('linear')
   })
 
   it.each(['origin', 'distance', 'none'])("keeps a valid persisted hinge mode '%s'", (mode) => {
@@ -147,8 +163,7 @@ describe('persistence', () => {
     act(() => {
       ctx.updateAdvanced({
         profile: {
-          family: 'polynomial', curvatureInput: 'rate', rateOfIncrease: '1e-3', secondGradient: '1.2',
-          secondGradientDistanceKm: '150', coefficients: ['1', '2', '', ''], degree: 4
+          family: 'polynomial', rateOfIncrease: '1e-3', formula: '2e-4 x^2 - 1e-7 x^3'
         },
         hinge: { mode: 'distance', distanceKm: '30' }
       })
@@ -160,10 +175,9 @@ describe('persistence', () => {
     first.unmount()
 
     mount()
-    expect(ctx.formState.advanced.profile.coefficients).toEqual(['1', '2', '', ''])
-    expect(ctx.formState.advanced.profile.degree).toBe(4)
-    expect(ctx.formState.advanced.profile.curvatureInput).toBe('rate')
-    expect(ctx.formState.advanced.profile.secondGradient).toBe('1.2')
+    expect(ctx.formState.advanced.profile).toEqual({
+      family: 'polynomial', rateOfIncrease: '1e-3', formula: '2e-4 x^2 - 1e-7 x^3'
+    })
     expect(ctx.formState.advanced.hinge).toEqual({ mode: 'distance', distanceKm: '30' })
     expect(ctx.formState.profilePreview).toBeNull()
   })

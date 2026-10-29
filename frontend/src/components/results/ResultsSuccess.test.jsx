@@ -52,18 +52,17 @@ describe('ResultsSuccess parameter line', () => {
     expect(screen.getByText(/hinge at spillway$/)).toBeInTheDocument()
   })
 
-  it('describes a second-gradient quadratic in the user-supplied terms', () => {
+  it('describes a polynomial by the formula the user typed', () => {
     renderResults({
       ...baseForm,
       mode: 'advanced',
       advanced: {
         profile: {
-          ...DEFAULT_PROFILE, family: 'quadratic', curvatureInput: 'secondGradient',
-          secondGradient: '1.2', secondGradientDistanceKm: '150'
+          ...DEFAULT_PROFILE, family: 'polynomial', formula: '2e-4 x^2 - 1e-7 x^3'
         },
         hinge: DEFAULT_HINGE
       }
     })
-    expect(screen.getByText(/Quadratic, second gradient 1\.2 m\/km at 150 km · hinge at spillway/)).toBeInTheDocument()
+    expect(screen.getByText(/Polynomial, 2e-4 x\^2 - 1e-7 x\^3 · hinge at spillway/)).toBeInTheDocument()
   })
 })

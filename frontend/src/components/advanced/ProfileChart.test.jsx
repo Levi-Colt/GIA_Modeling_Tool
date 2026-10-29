@@ -64,29 +64,7 @@ describe('ProfileChart', () => {
     expect(describeCurve(data)).not.toContain('(hinge)')
   })
 
-  describe('second-gradient marker', () => {
-    const point = { gradient: 0.7, distanceKm: 100 }
-
-    it('appears on the curve when that form is active, and is described in the aria-label', () => {
-      render(<ProfileChart preview={preview()} secondGradient={point} />)
-      expect(screen.getByTestId('second-gradient-marker')).toBeInTheDocument()
-      expect(screen.getByText('Second gradient: 0.7 m/km at 100 km')).toBeInTheDocument()
-      expect(screen.getByRole('img').getAttribute('aria-label')).toContain(
-        'second gradient of 0.7 m/km marked at 100 km'
-      )
-    })
-
-    it('is absent when the other form is active (no point passed)', () => {
-      render(<ProfileChart preview={preview()} secondGradient={null} />)
-      expect(screen.queryByTestId('second-gradient-marker')).not.toBeInTheDocument()
-      expect(screen.getByRole('img').getAttribute('aria-label')).not.toContain('second gradient')
-    })
-
-    it('is absent when its distance lies beyond the plotted range', () => {
-      render(<ProfileChart preview={preview()} secondGradient={{ gradient: 0.7, distanceKm: 900 }} />)
-      expect(screen.queryByTestId('second-gradient-marker')).not.toBeInTheDocument()
-    })
-
+  describe('upliftAt', () => {
     it('sits on the curve: upliftAt interpolates the returned samples', () => {
       const { data } = preview()
       // Linear interpolation between samples 7.5 km apart: close, not exact.

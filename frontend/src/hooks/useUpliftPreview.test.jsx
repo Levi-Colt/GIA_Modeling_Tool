@@ -27,7 +27,6 @@ const RESPONSE = {
 const advance = (ms) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
 const edit = (patch) => act(() => ctx.updateForm(patch))
 const A = newVector({ lat: '45', lon: '-105', azimuthDeg: '30' })
-const C = newVector({ lat: '46', lon: '-104', azimuthDeg: '40', tilt: 'custom', custom: { localGradient: '0.6' } })
 
 function ready(vectors = [A]) {
   act(() => {
@@ -66,8 +65,8 @@ describe('useUpliftPreview', () => {
       tilt_factor: 0.35,
       tilt_model: {
         version: 1,
-        direction: { type: 'vectors', vectors: [{ lat: 45, lon: -105, azimuth_deg: 30, range_km: null, custom: null }] },
-        profile: { family: 'linear', rate_of_increase: null, second_gradient: null, coefficients: null },
+        direction: { type: 'vectors', vectors: [{ lat: 45, lon: -105, azimuth_deg: 30, range_km: null }] },
+        profile: { family: 'linear', rate_of_increase: null, formula: null },
         hinge: { mode: 'origin', distance_km: null }
       },
       origin: [-104.9, 44.9],
@@ -88,13 +87,13 @@ describe('useUpliftPreview', () => {
     expect(upliftPreview).toHaveBeenCalledTimes(1) // the earlier one only
   })
 
-  it('omits tilt_factor and the profile when every vector is custom', async () => {
-    ready([C])
+  it('always sends the gradient at the spillway and the profile (the vectors only give directions)', async () => {
+    ready()
     await advance(UPLIFT_PREVIEW_DEBOUNCE_MS + 10)
     const body = upliftPreview.mock.calls[0][0]
-    expect(body).not.toHaveProperty('tilt_factor')
-    expect(body.tilt_model).not.toHaveProperty('profile')
-    expect(body.tilt_model.direction.vectors[0].custom).toEqual({ family: 'linear', local_gradient: 0.6 })
+    expect(body.tilt_factor).toBe(0.35)
+    expect(body.tilt_model.profile).toEqual({ family: 'linear', rate_of_increase: null, formula: null })
+    expect(body.tilt_model.direction.vectors[0]).not.toHaveProperty('custom')
   })
 
   it('waits for the resolved origin and DEM bounds', async () => {

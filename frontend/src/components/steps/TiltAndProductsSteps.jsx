@@ -60,13 +60,14 @@ export function TargetElevationField() {
 // top-level formState keys either way, so a value typed in one mode shows up
 // in the other. `showAzimuth={false}` (Advanced, multiple directions) shows
 // only the gradient: there is no single azimuth then, but the value is kept.
-// `factorRequired={false}` (every vector has its own tilt) drops the blue outline.
+// `showGradient={false}` shows only the azimuth (Advanced keeps the gradient in its
+// Profile block).
 export function TiltInputs({
   azimuthLabel = 'Azimuth (deg)',
   factorLabel = 'Tilt (m/km)',
   factorHelp = null,
   showAzimuth = true,
-  factorRequired = true
+  showGradient = true
 }) {
   const { formState, updateForm } = useProcessing()
   const azimuthStatus = valueStatus(formState.tiltAzimuth, {
@@ -74,12 +75,12 @@ export function TiltInputs({
     ok: parseFiniteNumber(formState.tiltAzimuth) !== null
   })
   const factorStatus = valueStatus(formState.tiltFactor, {
-    required: factorRequired,
+    required: true,
     ok: parseFiniteNumber(formState.tiltFactor) !== null
   })
   return (
     <div>
-      <div className={showAzimuth ? 'grid grid-cols-2 gap-2' : undefined}>
+      <div className={showAzimuth && showGradient ? 'grid grid-cols-2 gap-2' : undefined}>
         {showAzimuth && (
           <Field label={azimuthLabel} status={azimuthStatus}>
             <input
@@ -91,15 +92,17 @@ export function TiltInputs({
             />
           </Field>
         )}
-        <Field label={factorLabel} status={factorStatus}>
-          <input
-            type="number"
-            placeholder="Tilt (m/km)"
-            value={formState.tiltFactor}
-            onChange={(e) => updateForm({ tiltFactor: e.target.value })}
-            className={`w-full ${statusBorder(factorStatus)}`}
-          />
-        </Field>
+        {showGradient && (
+          <Field label={factorLabel} status={factorStatus}>
+            <input
+              type="number"
+              placeholder="Tilt (m/km)"
+              value={formState.tiltFactor}
+              onChange={(e) => updateForm({ tiltFactor: e.target.value })}
+              className={`w-full ${statusBorder(factorStatus)}`}
+            />
+          </Field>
+        )}
       </div>
       {factorHelp && <p className="mt-1 text-xs text-gray-500">{factorHelp}</p>}
     </div>

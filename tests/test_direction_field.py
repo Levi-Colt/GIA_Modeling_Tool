@@ -69,14 +69,6 @@ def build(vectors, raster, profile=PolynomialProfile((0.35,)), hinge=ORIGIN_HING
     return build_vector_uplift_model(vectors, ORIGIN, transform, shape, profile, hinge, **kw)
 
 
-def custom_linear(g):
-    return {"family": "linear", "local_gradient": g, "rate_of_increase": None}
-
-
-def custom_quadratic(g, k):
-    return {"family": "quadratic", "local_gradient": g, "rate_of_increase": k}
-
-
 # --- single-vector regression against the planar model -----------------------
 
 @pytest.mark.parametrize("profile,hinge", [
@@ -98,7 +90,6 @@ def test_single_vector_reproduces_the_planar_model(raster, profile, hinge):
     scale = np.abs(planar).max()
     assert np.abs(u - planar).max() <= 1e-6 * scale
     assert (model.hinge_d, model.hinge_source) == (d_h, source)
-    assert diag["case"] == "A"
     # And against the nominal azimuth: bounded by that mapping correction only.
     nominal = PlanarUpliftModel(28.0, profile, d_h, source).evaluate(east, north)
     assert np.abs(u - nominal).max() <= 1e-3 * scale
@@ -198,79 +189,16 @@ def test_no_vectors_is_rejected(small):
         build([], small)
 
 
-def test_every_vector_custom_needs_no_global_profile(small):
-    model, diag = build([Vector(*ORIGIN, 28.0, custom=custom_linear(0.3))], small, profile=None)
-    assert diag["case"] == "B"
-
-
-def test_a_global_vector_needs_a_global_profile(small):
+def test_a_global_profile_is_required(small):
     with pytest.raises(ValueError, match="global profile is required"):
         build([Vector(*ORIGIN, 28.0)], small, profile=None)
 
 
-# --- Case B: custom tilts ------------------------------------------------------
-
-def test_custom_tilts_equal_to_the_global_profile_reproduce_case_a(small):
-    """If each vector's custom tilt is what the global profile implies at its
-    location, integrating the blended gradient (Case B) matches Case A."""
-    transform, shape = small
-    profile = PolynomialProfile((0.35, 0.004))       # gradient 0.35 + 0.008 * phi
-    positions = [(-105.1, 45.0, 10.0), (-104.9, 45.0, 20.0), (-105.0, 45.15, 15.0)]
-    plain = [Vector(lon, lat, az) for lon, lat, az in positions]
-    _, diag = build(plain, small, profile)
-    g = diag["grid"]
-    (es, ns) = frame_of(transform, shape, [p[0] for p in positions], [p[1] for p in positions])
-    phi_at = _sample(diag["phi_grid"], g["e0"], g["n0"], g["h"], es, ns)
-    custom = [
-        Vector(lon, lat, az, custom=custom_quadratic(profile.g(p), 0.008))
-        for (lon, lat, az), p in zip(positions, phi_at)
-    ]
-
-    a_model, _ = build(plain, small, profile)
-    b_model, b_diag = build(custom, small, profile)
-    assert b_diag["case"] == "B"
-    east, north = pixel_frame(transform, shape)
-    ua, ub = a_model.evaluate(east, north), b_model.evaluate(east, north)
-    # Case B integrates a field that is only approximately curl-free (least
-    # squares, on the working grid), so the match is to a discretisation
-    # tolerance, not exact.
-    assert np.abs(ua - ub).max() <= 0.02 * np.abs(ua).max()
-
-
-def test_custom_linear_equal_to_a_global_linear_profile_reproduces_case_a(small):
-    transform, shape = small
-    profile = PolynomialProfile((0.35,))
-    plain = [Vector(-105.1, 45.0, 28.0), Vector(-104.9, 45.0, 28.0)]
-    custom = [Vector(v.lon, v.lat, v.azimuth_deg, custom=custom_linear(0.35)) for v in plain]
-    east, north = pixel_frame(transform, shape)
-    ua = build(plain, small, profile)[0].evaluate(east, north)
-    ub = build(custom, small, None)[0].evaluate(east, north)
-    assert np.abs(ua - ub).max() <= 0.02 * np.abs(ua).max()
-
-
-def test_steeper_custom_tilt_grows_uplift_faster_on_its_side(small):
-    transform, shape = small
-    gentle = Vector(-105.15, 45.0, 0.0, custom=custom_linear(0.3))
-    steep = Vector(-104.85, 45.0, 0.0, custom=custom_linear(0.9))
-    model, diag = build([gentle, steep], small, None)
-    assert diag["case"] == "B"
-    # Both vectors sit on the origin's parallel, so phi > 0 to their north.
-    # Isobase spacing is dU/d(phi): compare the rise between 25 and 40 km north
-    # of each vector. The steeper side rises faster (closer isobases), though the
-    # inverse-distance blend pulls the two sides toward each other (~1.5x, not
-    # 3x, at this vector spacing). Absolute U close to the spillway's parallel is
-    # not compared: two different gradients at one azimuth are not curl-free, so
-    # the least-squares surface trades some of the gradient for a slight tilt of
-    # the U = 0 contour there (a few metres).
-    es, ns = frame_of(transform, shape, [-105.15, -104.85], [45.0, 45.0])
-    rise_gentle, rise_steep = model.evaluate(es, ns + 40.0) - model.evaluate(es, ns + 25.0)
-    assert rise_steep > 1.3 * rise_gentle > 0
-
+# --- hinge --------------------------------------------------------------------
 
 def test_origin_hinge_flattens_uplift_behind_the_spillway(small):
-    """Gradient form of the origin hinge: G = 0 wherever phi < 0."""
     transform, shape = small
-    model, diag = build([Vector(*ORIGIN, 0.0, custom=custom_linear(0.6))], small, None, ORIGIN_HINGE)
+    model, diag = build([Vector(*ORIGIN, 0.0)], small, PolynomialProfile((0.6,)), ORIGIN_HINGE)
     g = diag["grid"]
     node_e = g["e0"] + g["h"] * np.arange(g["nx"])
     node_n = g["n0"] + g["h"] * np.arange(g["ny"])
@@ -278,19 +206,20 @@ def test_origin_hinge_flattens_uplift_behind_the_spillway(small):
     u = model.evaluate(grid_e, grid_n)
     behind = diag["phi_grid"] < -3 * g["h"]
     assert behind.any()
-    assert np.abs(u[behind]).max() <= 0.01 * np.abs(u).max()
+    assert np.abs(u[behind]).max() <= 1e-9 * np.abs(u).max()
     assert u[diag["phi_grid"] > 3 * g["h"]].min() > 0
 
 
 def test_hinge_none_only_the_guard_applies_behind_the_spillway(small):
-    """`none` lets the field continue behind the spillway, but a gradient that
+    """`none` lets the profile continue behind the spillway, but a gradient that
     would go negative there is held at zero (uplift never re-increases)."""
     transform, shape = small
-    # gradient 0.2 at the vector, rising 0.01 per km up-tilt => negative 20+ km behind it.
-    vec = Vector(*ORIGIN, 0.0, custom=custom_quadratic(0.2, 0.01))
-    model, diag = build([vec], small, None, {"mode": "none"})
+    # gradient 0.2 at the spillway, rising 0.01 per km up-tilt (c2 = 0.005) =>
+    # negative 20+ km behind it.
+    profile = PolynomialProfile((0.2, 0.005))
+    model, diag = build([Vector(*ORIGIN, 0.0)], small, profile, {"mode": "none"})
     assert diag["hinge_source"] == "guard"
-    assert diag["hinge_km"] == pytest.approx(-20.0, abs=2 * diag["grid"]["h"])
+    assert diag["hinge_km"] == pytest.approx(-20.0)
 
     # Walk south (behind the spillway) along the origin's meridian.
     south = np.linspace(0.0, -35.0, 141)
@@ -301,12 +230,12 @@ def test_hinge_none_only_the_guard_applies_behind_the_spillway(small):
     assert abs(u[-1] - u[-20]) <= 0.02 * abs(u[-1])       # flat past the guard point
 
 
-def test_all_custom_vectors_resolve_a_distance_hinge_without_a_profile(small):
-    _, diag = build([Vector(*ORIGIN, 0.0, custom=custom_linear(0.5))], small, None,
+def test_distance_hinge_is_resolved_by_the_profile(small):
+    _, diag = build([Vector(*ORIGIN, 0.0)], small, PolynomialProfile((0.5,)),
                     {"mode": "distance", "distance_km": 8.0})
     assert (diag["hinge_km"], diag["hinge_source"]) == (-8.0, "mode")
     with pytest.raises(ValueError, match="distance_km"):
-        build([Vector(*ORIGIN, 0.0, custom=custom_linear(0.5))], small, None, {"mode": "distance"})
+        build([Vector(*ORIGIN, 0.0)], small, PolynomialProfile((0.5,)), {"mode": "distance"})
 
 
 # --- windowed == in-memory -----------------------------------------------------
@@ -321,7 +250,7 @@ def test_windowed_and_in_memory_pipelines_agree_with_a_vectors_model(tmp_path):
         dst.write(dem, 1)
 
     model, _ = build_vector_uplift_model(
-        [Vector(-105.15, 45.0, 5.0), Vector(-104.85, 45.0, 30.0, custom=custom_linear(0.8))],
+        [Vector(-105.15, 45.0, 5.0), Vector(-104.85, 45.0, 30.0)],
         ORIGIN, transform, (n, n), PolynomialProfile((0.4, 0.002)), ORIGIN_HINGE)
     in_memory = calculate_tilt(dem, transform, ORIGIN, 0.0, 0.0, uplift_model=model)
     out = str(tmp_path / "tilted.tif")
@@ -359,17 +288,30 @@ def test_isobase_levels_are_nice_and_few(small):
 
 # --- the spec-dict entry point ---------------------------------------------------
 
-def test_build_from_spec_matches_direct_build_and_ignores_an_unused_profile(small):
+def test_build_from_spec_matches_direct_build(small):
     transform, shape = small
     spec = {
         "direction": {"type": "vectors", "vectors": [
-            {"lat": 45.0, "lon": -105.0, "azimuth_deg": 28.0, "range_km": None,
-             "custom": custom_linear(0.6)},
+            {"lat": 45.0, "lon": -105.0, "azimuth_deg": 28.0, "range_km": None},
         ]},
-        "profile": {"family": "linear", "rate_of_increase": None, "second_gradient": None,
-                    "coefficients": None},
+        "profile": {"family": "linear", "rate_of_increase": None, "formula": None, "coefficients": None},
         "hinge": {"mode": "origin", "distance_km": None},
     }
-    a, _ = build_vector_model_from_spec(spec, None, ORIGIN, transform, shape)   # no tilt_factor needed
-    b, _ = build([Vector(*ORIGIN, 28.0, custom=custom_linear(0.6))], small, None)
+    a, _ = build_vector_model_from_spec(spec, 0.6, ORIGIN, transform, shape)
+    b, _ = build([Vector(*ORIGIN, 28.0)], small, PolynomialProfile((0.6,)))
     assert np.array_equal(a.values, b.values)
+    assert a.profile.coeffs == b.profile.coeffs
+
+
+def test_build_from_spec_uses_a_polynomial_profiles_coefficients(small):
+    transform, shape = small
+    spec = {
+        "direction": {"type": "vectors", "vectors": [
+            {"lat": 45.0, "lon": -105.0, "azimuth_deg": 28.0, "range_km": None},
+        ]},
+        "profile": {"family": "polynomial", "rate_of_increase": None, "formula": "1e-3 x^2 - 1e-6 x^3",
+                    "coefficients": [1e-3, -1e-6]},
+        "hinge": {"mode": "origin", "distance_km": None},
+    }
+    model, _ = build_vector_model_from_spec(spec, 0.4, ORIGIN, transform, shape)
+    assert model.profile.coeffs == (0.4, 1e-3, -1e-6)

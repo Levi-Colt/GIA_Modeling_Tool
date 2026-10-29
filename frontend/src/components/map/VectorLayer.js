@@ -10,7 +10,7 @@ import { arrowGeometry, bearingDeg, distanceKm, isClick } from '../../utils/geom
 // Contract (see MapPanel):
 //   render(vectors, editing)   -- rebuilds the arrows
 //   setEditing(editing)        -- swaps in fresh callbacks, no rebuild
-//     vectors: [{ id, number, lon, lat, azimuthDeg | null, rangeKm | null, lengthKm, selected, custom }]
+//     vectors: [{ id, number, lon, lat, azimuthDeg | null, rangeKm | null, lengthKm, selected }]
 //     editing?: { mode: 'none' | 'addVector', onAddVector, onUpdateVector,
 //                 onSelectVector, onExitAddMode }
 //   destroy()
@@ -26,9 +26,9 @@ const ICON_TEXT = 'font:600 11px system-ui,sans-serif;'
 const toLatLng = ([lon, lat]) => [lat, lon]
 const pointOf = (latlng) => [latlng.lng, latlng.lat]
 
-function baseIcon(number, selected, custom) {
-  const fill = custom ? (selected ? COLOR_SELECTED : COLOR) : '#fff'
-  const text = custom ? '#fff' : selected ? COLOR_SELECTED : COLOR
+function baseIcon(number, selected) {
+  const fill = '#fff'
+  const text = selected ? COLOR_SELECTED : COLOR
   const border = selected ? COLOR_SELECTED : COLOR
   return L.divIcon({
     className: '',
@@ -62,14 +62,12 @@ export function createVectorLayer(map, { pane, container }) {
     const weight = vector.selected ? 4 : 2
     const geom = arrowGeometry([vector.lon, vector.lat], vector.azimuthDeg, vector.lengthKm)
     const shaft = L.polyline(geom.shaft.map(toLatLng), { pane, color, weight })
-    // Custom-tilt vectors get a filled head, global ones a hollow one.
+    // A hollow head: the vectors only give directions.
     const head = L.polygon(geom.head.map(toLatLng), {
       pane,
       color,
       weight: vector.selected ? 3 : 1.5,
-      fill: vector.custom,
-      fillColor: color,
-      fillOpacity: vector.custom ? 1 : 0
+      fill: false
     })
     return { shaft, head }
   }
@@ -77,7 +75,7 @@ export function createVectorLayer(map, { pane, container }) {
   function addVector(vector, editable) {
     const select = () => editingRef.current?.onSelectVector?.(vector.id)
     const base = L.marker([vector.lat, vector.lon], {
-      icon: baseIcon(vector.number, vector.selected, vector.custom),
+      icon: baseIcon(vector.number, vector.selected),
       draggable: editable,
       keyboard: false, // the table is the keyboard path
       interactive: editable,

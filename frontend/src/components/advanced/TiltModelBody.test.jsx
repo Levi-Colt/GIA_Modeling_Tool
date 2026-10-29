@@ -23,7 +23,6 @@ function renderBody() {
 const pick = async (user, label, option) => user.selectOptions(screen.getByLabelText(label), option)
 const hingeOptions = () =>
   Array.from(screen.getByLabelText('Hinge behind spillway').querySelectorAll('option')).map((o) => o.textContent)
-const curvatureButton = (name) => screen.getByRole('button', { name })
 
 beforeEach(() => window.localStorage.clear())
 
@@ -32,7 +31,8 @@ describe('TiltModelBody', () => {
     renderBody()
     expect(screen.getByLabelText('Single azimuth')).toBeInTheDocument()
     expect(screen.getByLabelText('Gradient at spillway (m/km)')).toBeInTheDocument()
-    expect(screen.queryByRole('group', { name: 'Curvature from' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/Rate of increase/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Formula')).not.toBeInTheDocument()
     expect(hingeOptions()).toEqual([
       'At spillway (default)',
       'Distance behind spillway…',
@@ -51,54 +51,41 @@ describe('TiltModelBody', () => {
     expect(screen.getByText('Where uplift stops changing as you move behind the spillway.')).toBeInTheDocument()
   })
 
-  it('quadratic: "Curvature from" defaults to Second gradient, with its own fields and help', async () => {
-    const user = userEvent.setup()
+  it('tilt lives in the Profile block: the gradient sits under the Profile heading, apart from the direction', () => {
     renderBody()
-    await pick(user, 'Profile family', 'quadratic')
-
-    expect(screen.getByRole('group', { name: 'Curvature from' })).toBeInTheDocument()
-    expect(curvatureButton('Second gradient')).toHaveAttribute('aria-pressed', 'true')
-    expect(curvatureButton('Rate of increase')).toHaveAttribute('aria-pressed', 'false')
-    expect(screen.getByLabelText('Gradient (m/km)')).toHaveAttribute('placeholder', 'm/km')
-    expect(screen.getByLabelText(/^at distance \(km\) up the uplift direction from the spillway/)).toHaveAttribute(
-      'placeholder',
-      'km'
-    )
-    expect(screen.getByText(/the curve is fitted through both/)).toBeInTheDocument()
-    expect(screen.queryByLabelText(/Rate of increase/)).not.toBeInTheDocument()
+    const heading = screen.getByText('Profile')
+    const gradient = screen.getByLabelText('Gradient at spillway (m/km)')
+    const azimuth = screen.getByLabelText('Single azimuth')
+    // The azimuth comes before the Profile heading, the gradient after it.
+    expect(azimuth.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(heading.compareDocumentPosition(gradient) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('switching to Rate of increase shows the rate input and its help; hidden values are kept', async () => {
+  it('quadratic: a rate of increase (m/km per km), required, with its help; no second-gradient form', async () => {
     const user = userEvent.setup()
     renderBody()
     await pick(user, 'Profile family', 'quadratic')
-    await user.type(screen.getByLabelText('Gradient (m/km)'), '1.2')
-    await user.type(screen.getByLabelText(/^at distance/), '150')
 
-    await user.click(curvatureButton('Rate of increase'))
     const rate = screen.getByLabelText('Rate of increase (m/km per km)')
     expect(rate).toHaveAttribute('placeholder', 'm/km per km')
+    expect(rate.className).toMatch(/border-blue-400/) // required and empty
     expect(screen.getByText(/0 gives a linear profile/)).toBeInTheDocument()
-    expect(screen.queryByLabelText('Gradient (m/km)')).not.toBeInTheDocument()
-    await user.type(rate, '4e-3')
-
-    await user.click(curvatureButton('Second gradient'))
-    expect(screen.getByLabelText('Gradient (m/km)')).toHaveValue('1.2')
-    expect(screen.getByLabelText(/^at distance/)).toHaveValue('150')
-    expect(ctx.formState.advanced.profile.rateOfIncrease).toBe('4e-3') // kept while hidden
+    expect(screen.queryByRole('group', { name: 'Curvature from' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/second gradient/i)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Formula')).not.toBeInTheDocument()
   })
 
   it('numeric fields are text inputs that accept exponent notation and flag junk', async () => {
     const user = userEvent.setup()
     renderBody()
     await pick(user, 'Profile family', 'quadratic')
-    await user.click(curvatureButton('Rate of increase'))
     const rate = screen.getByLabelText('Rate of increase (m/km per km)')
     expect(rate).toHaveAttribute('type', 'text')
 
     await user.type(rate, '4e-3')
     expect(rate).toHaveValue('4e-3')
     expect(rate).not.toHaveAttribute('aria-invalid')
+    expect(rate.className).toMatch(/border-green-500/)
 
     await user.clear(rate)
     await user.type(rate, 'abc')
@@ -106,36 +93,56 @@ describe('TiltModelBody', () => {
     expect(screen.getByText('Enter a number.')).toBeInTheDocument()
   })
 
-  it('a second-gradient distance of zero is flagged', async () => {
+  it('switching family keeps the values typed for the others', async () => {
     const user = userEvent.setup()
     renderBody()
     await pick(user, 'Profile family', 'quadratic')
-    await user.type(screen.getByLabelText(/^at distance/), '0')
-    expect(screen.getByLabelText(/^at distance/)).toHaveAttribute('aria-invalid', 'true')
-    expect(screen.getByText('Enter a number greater than 0.')).toBeInTheDocument()
+    await user.type(screen.getByLabelText('Rate of increase (m/km per km)'), '4e-3')
+    await pick(user, 'Profile family', 'polynomial')
+    await user.type(screen.getByLabelText('Formula'), '2e-4 x^2')
+    await pick(user, 'Profile family', 'quadratic')
+    expect(screen.getByLabelText('Rate of increase (m/km per km)')).toHaveValue('4e-3')
+    expect(ctx.formState.advanced.profile.formula).toBe('2e-4 x^2') // kept while hidden
   })
 
-  it('polynomial: unit-only placeholders, the help text, and coefficient inputs following the degree', async () => {
+  it('polynomial: a formula box with a unit-free placeholder and format help beneath it', async () => {
     const user = userEvent.setup()
     renderBody()
     await pick(user, 'Profile family', 'polynomial')
 
-    // Default degree 3 -> c2, c3.
-    expect(screen.getByLabelText(/^c₂ \(m\/km²\)/)).toHaveAttribute('placeholder', 'm/km²')
-    expect(screen.getByLabelText(/^c₃ \(m\/km³\)/)).toBeInTheDocument()
-    expect(screen.queryByLabelText(/^c₄/)).not.toBeInTheDocument()
-    expect(screen.getByText(/Terms of U\(d\) = g₀·d \+ c₂·d²/)).toBeInTheDocument()
+    const formula = screen.getByLabelText('Formula')
+    expect(formula).toHaveAttribute('type', 'text')
+    expect(formula).toHaveAttribute('placeholder', 'a x^p + …')
+    expect(formula.className).toMatch(/border-blue-400/) // required and empty
+    expect(screen.getByText(/Write the curve's extra terms as a x\^p/)).toBeInTheDocument()
+    expect(screen.getByText(/x is the distance in km up the uplift direction from the spillway/)).toBeInTheDocument()
+    expect(screen.getByText(/p is a whole number from 2 to 5/)).toBeInTheDocument()
+    expect(screen.getByText(/The linear term is the gradient above/)).toBeInTheDocument()
+    // The old degree + coefficient slots are gone.
+    expect(screen.queryByLabelText('Degree')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/^c₂/)).not.toBeInTheDocument()
+  })
 
-    await pick(user, 'Degree', '5')
-    await user.type(screen.getByLabelText(/^c₄/), '1e-6')
-    expect(screen.getByLabelText(/^c₅ \(m\/km⁵\)/)).toBeInTheDocument()
+  it('polynomial: live feedback - green and "Reads as ..." when valid, red with the reason when not', async () => {
+    const user = userEvent.setup()
+    renderBody()
+    await pick(user, 'Profile family', 'polynomial')
+    const formula = screen.getByLabelText('Formula')
 
-    await pick(user, 'Degree', '2')
-    expect(screen.queryByLabelText(/^c₃/)).not.toBeInTheDocument()
-    expect(ctx.formState.advanced.profile.coefficients[2]).toBe('1e-6') // hidden but kept
+    await user.type(formula, '2e-4 x')
+    expect(formula).toHaveAttribute('aria-invalid', 'true')
+    expect(formula.className).toMatch(/border-red-400/)
+    expect(screen.getByText(/Every term needs an exponent from 2 to 5/)).toBeInTheDocument()
 
-    await pick(user, 'Degree', '4')
-    expect(screen.getByLabelText(/^c₄/)).toHaveValue('1e-6')
+    await user.type(formula, '^2 - 1.5e-7 x^3')
+    expect(formula).not.toHaveAttribute('aria-invalid')
+    expect(formula.className).toMatch(/border-green-500/)
+    expect(screen.getByText('Reads as c₂ = 0.0002 m/km², c₃ = −1.5e-7 m/km³')).toBeInTheDocument()
+    expect(ctx.formState.advanced.profile.formula).toBe('2e-4 x^2 - 1.5e-7 x^3')
+
+    await user.clear(formula)
+    expect(formula.className).toMatch(/border-blue-400/) // empty again: required, not an error
+    expect(screen.queryByText(/Reads as/)).not.toBeInTheDocument()
   })
 
   it('a distance hinge reveals a km input (placeholder "km"); other modes hide it but keep the value', async () => {
@@ -162,27 +169,22 @@ describe('TiltModelBody', () => {
     expect(screen.getByLabelText('Hinge behind spillway')).toHaveValue('none')
   })
 
-  it('has no example numbers or paper references in any placeholder or help text', async () => {
+  it('has no paper references, and no numbers in any placeholder (the one format example is in the formula help)', async () => {
     const user = userEvent.setup()
     const { container } = renderBody()
     for (const family of ['quadratic', 'polynomial']) {
       await pick(user, 'Profile family', family)
-      if (family === 'quadratic') await user.click(curvatureButton('Rate of increase'))
       const placeholders = Array.from(container.querySelectorAll('[placeholder]')).map((e) =>
         e.getAttribute('placeholder')
       )
-      for (const p of placeholders) expect(p).not.toMatch(/\d\.\d|e-\d|e\.g\./i)
+      for (const ph of placeholders) expect(ph).not.toMatch(/\d\.\d|e-\d|e\.g\./i)
       expect(container.textContent).not.toMatch(/Lewis|Table 3|e\.g\./)
     }
   })
 
-  it('shows the preview chart, marking the second gradient while that form is active', async () => {
-    const user = userEvent.setup()
+  it('shows the preview chart for a single direction', async () => {
     renderBody()
     expect(screen.getByText(/Fill in the tilt parameters/)).toBeInTheDocument()
-    await pick(user, 'Profile family', 'quadratic')
-    await user.type(screen.getByLabelText('Gradient (m/km)'), '0.7')
-    await user.type(screen.getByLabelText(/^at distance/), '5')
 
     act(() =>
       ctx.updateForm({
@@ -202,9 +204,5 @@ describe('TiltModelBody', () => {
       })
     )
     expect(screen.getByRole('img')).toBeInTheDocument()
-    expect(screen.getByTestId('second-gradient-marker')).toBeInTheDocument()
-
-    await user.click(curvatureButton('Rate of increase'))
-    expect(screen.queryByTestId('second-gradient-marker')).not.toBeInTheDocument()
   })
 })

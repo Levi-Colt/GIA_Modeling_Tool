@@ -2,7 +2,6 @@
 // rest of App.jsx's module graph (MapPanel -> georaster-layer-for-leaflet,
 // heavy and irrelevant to this pure gating logic).
 import { tiltModelIssues, usingPoints, usingVectors } from './tiltModel.js'
-import { anyGlobal, normalizeVectors } from './vectors.js'
 
 // The optional selection radius (km): '' means "no limit"; anything else must
 // be a finite number > 0. Returns that number, or null when empty/invalid.
@@ -25,10 +24,9 @@ export function getReadiness(formState) {
   if (formState.preflightStatus !== 'valid') need('dem', 'a valid DEM')
   if (!formState.originValue) need('origin', 'origin coordinates')
   if (usingVectors(formState)) {
-    // Vectors mode (Advanced only): no single azimuth, and the gradient at the
-    // spillway is needed only while some vector uses the global profile.
-    const vectors = normalizeVectors(formState.advanced.vectors)
-    if (anyGlobal(vectors) && !formState.tiltFactor) need('tilt', 'the global gradient at the spillway')
+    // Vectors mode (Advanced only): no single azimuth; the directions come from
+    // the vectors, the magnitude from the profile's gradient at the spillway.
+    if (!formState.tiltFactor) need('tilt', 'the gradient at the spillway')
   } else if (usingPoints(formState)) {
     // Shore-points mode (Advanced only): magnitude and direction come from the
     // fitted surface, so neither an azimuth nor a gradient is needed. The points

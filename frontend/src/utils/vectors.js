@@ -5,27 +5,13 @@
 // interpretation. Vector fields are kept as strings, like the rest of the form.
 //
 // Range is a vector's range of influence (how far its direction is trusted),
-// never a magnitude; a custom tilt's gradient is *local* -- the gradient at that
-// vector's own location.
+// never a magnitude. Vectors only give directions: the magnitude always comes from
+// the one global profile (there are no per-vector tilts).
 import { arrowLengthKm } from './geometry.js'
-import { curvatureForm, parseFiniteNumber, parsePositiveNumber, parseSecondGradient } from './numbers.js'
+import { parseFiniteNumber, parsePositiveNumber } from './numbers.js'
 
 export const MAX_VECTORS = 200
 export const UNDO_LIMIT = 20
-
-export const CUSTOM_FAMILIES = [
-  { value: 'linear', label: 'Linear' },
-  { value: 'quadratic', label: 'Quadratic' }
-]
-
-export const DEFAULT_CUSTOM = {
-  family: 'linear',
-  localGradient: '',
-  curvatureInput: 'secondGradient', // same two forms as the global profile
-  rateOfIncrease: '',
-  secondGradient: '',
-  secondGradientDistanceKm: ''
-}
 
 // Stable ids for React keys and for linking table rows to map arrows.
 export function newId() {
@@ -34,16 +20,17 @@ export function newId() {
 }
 
 export function newVector(patch = {}) {
-  const { custom, ...rest } = patch
+  // Older saves carried a per-vector tilt ('global' | 'custom' and its parameters);
+  // that no longer exists, so any such keys are dropped.
+  // eslint-disable-next-line no-unused-vars
+  const { tilt, custom, ...rest } = patch
   return {
     id: newId(),
     lat: '',
     lon: '',
     azimuthDeg: '',
     rangeKm: '',
-    tilt: 'global', // 'global' | 'custom'
-    ...rest,
-    custom: { ...DEFAULT_CUSTOM, ...(custom ?? {}) }
+    ...rest
   }
 }
 
@@ -54,10 +41,6 @@ export function normalizeVectors(list) {
   if (!Array.isArray(list)) return []
   return list.filter((v) => v && typeof v === 'object').map((v) => newVector({ ...v, id: v.id || newId() }))
 }
-
-export const isCustom = (v) => v.tilt === 'custom'
-export const anyGlobal = (vectors) => vectors.some((v) => !isCustom(v))
-export const allCustom = (vectors) => vectors.length > 0 && vectors.every(isCustom)
 
 const inRange = (n, lo, hi) => n !== null && n >= lo && n <= hi
 
@@ -79,16 +62,6 @@ export function parseVector(v) {
 
 export const normalizeAzimuth = (deg) => ((deg % 360) + 360) % 360
 
-// Whether a custom tilt has everything its family needs (only the active
-// curvature form's fields count).
-export function customIsComplete(custom) {
-  if (parseFiniteNumber(custom.localGradient) === null) return false
-  if (custom.family !== 'quadratic') return true
-  return curvatureForm(custom) === 'rate'
-    ? parseFiniteNumber(custom.rateOfIncrease) !== null
-    : parseSecondGradient(custom) !== null
-}
-
 function rowsText(rows) {
   const shown = rows.slice(0, 6).join(', ')
   return `${rows.length === 1 ? 'vector' : 'vectors'} ${shown}${rows.length > 6 ? '…' : ''}`
@@ -102,46 +75,28 @@ export function vectorIssues(vectors) {
   if (vectors.length > MAX_VECTORS) issues.push(`no more than ${MAX_VECTORS} vectors`)
   const badPlace = []
   const badRange = []
-  const badCustom = []
   vectors.forEach((v, i) => {
     const p = parseVector(v)
     if (p.lat === null || p.lon === null || p.azimuth === null) badPlace.push(i + 1)
     if (!p.range.ok) badRange.push(i + 1)
-    if (isCustom(v) && !customIsComplete(v.custom)) badCustom.push(i + 1)
   })
   if (badPlace.length) issues.push(`a valid latitude, longitude and azimuth for ${rowsText(badPlace)}`)
   if (badRange.length) issues.push(`a range greater than 0 (or empty) for ${rowsText(badRange)}`)
-  if (badCustom.length) issues.push(`a complete custom tilt for ${rowsText(badCustom)}`)
   return issues
 }
 
 // `tilt_model.direction` for vectors mode. Only meaningful once vectorIssues is
-// empty. Range is null when empty; a quadratic custom tilt sends only its active
-// curvature form; azimuths are normalized into [0, 360).
+// empty. Range is null when empty; azimuths are normalized into [0, 360).
 export function buildVectorsDirection(vectors) {
   return {
     type: 'vectors',
     vectors: vectors.map((v) => {
       const p = parseVector(v)
-      let custom = null
-      if (isCustom(v)) {
-        const c = v.custom
-        custom = { family: c.family, local_gradient: parseFiniteNumber(c.localGradient) }
-        if (c.family === 'quadratic') {
-          if (curvatureForm(c) === 'rate') {
-            custom.rate_of_increase = parseFiniteNumber(c.rateOfIncrease)
-          } else {
-            const second = parseSecondGradient(c)
-            custom.second_gradient = { gradient_m_per_km: second?.gradient ?? null, distance_km: second?.distanceKm ?? null }
-          }
-        }
-      }
       return {
         lat: p.lat,
         lon: p.lon,
         azimuth_deg: p.azimuth === null ? null : normalizeAzimuth(p.azimuth),
-        range_km: p.range.value,
-        custom
+        range_km: p.range.value
       }
     })
   }
@@ -166,8 +121,7 @@ export function vectorsToMapData(vectors, selectedId, extent) {
       azimuthDeg: p.azimuth === null ? null : normalizeAzimuth(p.azimuth),
       rangeKm: p.range.value,
       lengthKm: arrowLengthKm(p.range.value, extent),
-      selected: v.id === selectedId,
-      custom: isCustom(v)
+      selected: v.id === selectedId
     })
   })
   return out

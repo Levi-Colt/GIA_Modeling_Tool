@@ -3,6 +3,7 @@ import {
   DEFAULT_DIRECTION_SOURCE,
   DEFAULT_HINGE,
   DEFAULT_PROFILE,
+  FAMILIES,
   directionSourceOf,
   normalizeHingeMode
 } from '../utils/tiltModel.js'
@@ -58,9 +59,9 @@ const defaultState = {
     sectionsOpen: { dem: true, origin: true, tilt: true, output: false },
     // Uplift model (documentation/UPLIFT_MODEL_SPEC.md D5, amended by
     // UPLIFT_MODEL_CORRECTIONS_SPEC.md). `tiltFactor` (top level) is the
-    // gradient at the spillway in every family. `degree` sets how many
-    // coefficient inputs show; the hidden curvature form and hidden coefficient
-    // slots keep their typed values.
+    // gradient at the spillway in every family. A quadratic keeps its rate of
+    // increase and a polynomial its formula; the field of the family not selected
+    // keeps its typed value. This profile also serves multiple directions.
     profile: DEFAULT_PROFILE,
     // mode: 'origin' | 'distance' | 'none'; the default is 'origin' for every family.
     hinge: DEFAULT_HINGE,
@@ -152,6 +153,16 @@ function loadCarriedForwardState() {
     // Spec 4a removed the hinge modes 'default' and 'natural'; a save from
     // before that (only ever run locally) maps them to the default, 'origin'.
     advanced.hinge = { ...advanced.hinge, mode: normalizeHingeMode(advanced.hinge?.mode) }
+    // The profile keeps only what exists now. Older saves had a second-gradient
+    // form and a degree + coefficient slots; those inputs are gone (a quadratic
+    // takes its rate, a polynomial a formula), so a save in one of those forms
+    // simply comes back with the new field empty and highlighted.
+    const { family, rateOfIncrease, formula } = advanced.profile ?? {}
+    advanced.profile = {
+      family: FAMILIES.some((f) => f.value === family) ? family : DEFAULT_PROFILE.family,
+      rateOfIncrease: typeof rateOfIncrease === 'string' ? rateOfIncrease : DEFAULT_PROFILE.rateOfIncrease,
+      formula: typeof formula === 'string' ? formula : DEFAULT_PROFILE.formula
+    }
     // Every saved vector gets an id and all keys (deepMerge replaces arrays wholesale).
     advanced.vectors = normalizeVectors(advanced.vectors)
     advanced.shorePoints = normalizeShorePoints(advanced.shorePoints)

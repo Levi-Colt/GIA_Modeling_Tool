@@ -5,9 +5,7 @@ import { buildProcessPayload } from './payload.js'
 import { DEFAULT_HINGE, DEFAULT_PROFILE, buildTiltModel, describeTiltModel, tiltModelIssues } from './tiltModel.js'
 import { newVector } from './vectors.js'
 
-const global = (patch = {}) => newVector({ lat: '45', lon: '-105', azimuthDeg: '30', ...patch })
-const custom = (patch = {}) =>
-  newVector({ lat: '46', lon: '-104', azimuthDeg: '40', tilt: 'custom', custom: { localGradient: '0.6' }, ...patch })
+const vec = (patch = {}) => newVector({ lat: '45', lon: '-105', azimuthDeg: '30', ...patch })
 
 function advanced(vectors, extra = {}) {
   return {
@@ -28,8 +26,7 @@ function form(vectors, patch = {}, advancedExtra = {}) {
     demFile: null,
     demPath: '/data/dem.tif',
     originValue: '45, -105',
-    originEpsg: '',
-    tiltAzimuth: '',
+      tiltAzimuth: '',
     tiltFactor: '0.35',
     targetElevation: '1500',
     elevationCheckStatus: 'dem',
@@ -42,7 +39,7 @@ function form(vectors, patch = {}, advancedExtra = {}) {
 
 describe('getReadiness in vectors mode', () => {
   it('does not need a single azimuth', () => {
-    const r = getReadiness(form([global()]))
+    const r = getReadiness(form([vec()]))
     expect(r.ready).toBe(true)
     expect(r.missingText).not.toContain('tilt azimuth')
   })
@@ -53,37 +50,34 @@ describe('getReadiness in vectors mode', () => {
     expect(r.missing).toContainEqual({ section: 'tilt', text: 'at least one vector' })
   })
 
-  it('needs the gradient at the spillway only while some vector is global', () => {
-    expect(getReadiness(form([global()], { tiltFactor: '' })).missing).toContainEqual({
+  it('always needs the gradient at the spillway (the profile gives the magnitude everywhere)', () => {
+    expect(getReadiness(form([vec()], { tiltFactor: '' })).missing).toContainEqual({
       section: 'tilt',
-      text: 'the global gradient at the spillway'
+      text: 'the gradient at the spillway'
     })
-    expect(getReadiness(form([global(), custom()], { tiltFactor: '' })).ready).toBe(false)
-    expect(getReadiness(form([custom(), custom()], { tiltFactor: '' })).ready).toBe(true)
+    expect(getReadiness(form([vec(), vec()], { tiltFactor: '' })).ready).toBe(false)
   })
 
-  it('reports invalid rows and incomplete custom rows in the tilt section', () => {
-    const r = getReadiness(form([global({ azimuthDeg: '' }), custom({ custom: { localGradient: '' } })]))
+  it('reports invalid rows in the tilt section', () => {
+    const r = getReadiness(form([vec({ azimuthDeg: '' }), vec({ lat: '95' })]))
     const tilt = r.missing.filter((m) => m.section === 'tilt').map((m) => m.text)
-    expect(tilt).toEqual([
-      'a valid latitude, longitude and azimuth for vector 1',
-      'a complete custom tilt for vector 2'
-    ])
+    expect(tilt).toEqual(['a valid latitude, longitude and azimuth for vectors 1, 2'])
   })
 
-  it('the global profile fields count only while some vector is global', () => {
-    const quadratic = { profile: { ...DEFAULT_PROFILE, family: 'quadratic' } } // second gradient form, empty
-    expect(getReadiness(form([global()], {}, quadratic)).missingText).toContain('a second gradient (a number)')
-    expect(getReadiness(form([custom()], {}, quadratic)).ready).toBe(true) // unused, so not required
+  it('the profile fields are required in vectors mode, like any other', () => {
+    const quadratic = { profile: { ...DEFAULT_PROFILE, family: 'quadratic' } } // rate empty
+    expect(getReadiness(form([vec()], {}, quadratic)).missingText).toContain('a rate of increase (a number)')
+    const poly = { profile: { ...DEFAULT_PROFILE, family: 'polynomial', formula: '2e-4 x^2' } }
+    expect(getReadiness(form([vec()], {}, poly)).ready).toBe(true)
   })
 
-  it('the hinge distance is required even when every vector is custom (the hinge always applies)', () => {
-    const r = getReadiness(form([custom()], {}, { hinge: { mode: 'distance', distanceKm: '' } }))
+  it('the hinge distance is required when that hinge mode is chosen', () => {
+    const r = getReadiness(form([vec()], {}, { hinge: { mode: 'distance', distanceKm: '' } }))
     expect(r.missingText).toContain('a hinge distance greater than 0')
   })
 
   it('still needs the DEM, origin and target elevation, like every mode', () => {
-    const r = getReadiness(form([global()], { preflightStatus: 'idle', originValue: '' }))
+    const r = getReadiness(form([vec()], { preflightStatus: 'idle', originValue: '' }))
     expect(r.missing.map((m) => m.section)).toEqual(expect.arrayContaining(['dem', 'origin']))
   })
 
@@ -104,7 +98,7 @@ describe('buildProcessPayload in vectors mode', () => {
   const tm = (f) => JSON.parse(buildProcessPayload(f).tilt_model)
 
   it('sends direction.type vectors with each vector as numbers, and omits tilt_azimuth', () => {
-    const f = form([global({ rangeKm: '150' }), global({ azimuthDeg: '10', rangeKm: '' })], { tiltAzimuth: '99' })
+    const f = form([vec({ rangeKm: '150' }), vec({ azimuthDeg: '10', rangeKm: '' })], { tiltAzimuth: '99' })
     const payload = buildProcessPayload(f)
     expect(payload).not.toHaveProperty('tilt_azimuth') // even if a stale value is in state
     expect(payload.tilt_factor).toBe('0.35')
@@ -112,37 +106,34 @@ describe('buildProcessPayload in vectors mode', () => {
     expect(model.direction).toEqual({
       type: 'vectors',
       vectors: [
-        { lat: 45, lon: -105, azimuth_deg: 30, range_km: 150, custom: null },
-        { lat: 45, lon: -105, azimuth_deg: 10, range_km: null, custom: null }
+        { lat: 45, lon: -105, azimuth_deg: 30, range_km: 150 },
+        { lat: 45, lon: -105, azimuth_deg: 10, range_km: null }
       ]
     })
-    expect(model.profile).toEqual({ family: 'linear', rate_of_increase: null, second_gradient: null, coefficients: null })
+    expect(model.profile).toEqual({ family: 'linear', rate_of_increase: null, formula: null })
     expect(model.hinge).toEqual({ mode: 'origin', distance_km: null })
   })
 
-  it('omits tilt_factor (and the unused profile) only when every vector is custom', () => {
-    const allCustom = buildProcessPayload(form([custom(), custom()]))
-    expect(allCustom).not.toHaveProperty('tilt_factor')
-    expect(allCustom).not.toHaveProperty('tilt_azimuth')
-    const model = JSON.parse(allCustom.tilt_model)
-    expect(model).not.toHaveProperty('profile')
-    expect(model.hinge.mode).toBe('origin') // the hinge is still sent
-
-    const mixed = buildProcessPayload(form([custom(), global()]))
-    expect(mixed.tilt_factor).toBe('0.35')
-    expect(JSON.parse(mixed.tilt_model)).toHaveProperty('profile')
+  it('always sends tilt_factor and the profile (there are no per-vector tilts)', () => {
+    const payload = buildProcessPayload(form([vec(), vec({ azimuthDeg: '80' })]))
+    expect(payload).not.toHaveProperty('tilt_azimuth')
+    expect(payload.tilt_factor).toBe('0.35')
+    const model = JSON.parse(payload.tilt_model)
+    expect(model.profile).toEqual({ family: 'linear', rate_of_increase: null, formula: null })
+    expect(model.hinge.mode).toBe('origin')
   })
 
-  it('the global profile keeps its active curvature form only', () => {
-    const quad = { profile: { ...DEFAULT_PROFILE, family: 'quadratic', rateOfIncrease: '0.004', curvatureInput: 'rate',
-      secondGradient: '1', secondGradientDistanceKm: '50' } }
-    const profile = tm(form([global()], {}, quad)).profile
-    expect(profile.rate_of_increase).toBe(0.004)
-    expect(profile.second_gradient).toBeNull()
+  it('a polynomial profile sends its formula; a quadratic only its rate', () => {
+    const poly = { profile: { ...DEFAULT_PROFILE, family: 'polynomial', formula: '2e-4 x^2', rateOfIncrease: '1' } }
+    expect(tm(form([vec()], {}, poly)).profile).toEqual({
+      family: 'polynomial', rate_of_increase: null, formula: '2e-4 x^2'
+    })
+    const quad = { profile: { ...DEFAULT_PROFILE, family: 'quadratic', rateOfIncrease: '0.004', formula: 'junk' } }
+    expect(tm(form([vec()], {}, quad)).profile).toEqual({ family: 'quadratic', rate_of_increase: 0.004, formula: null })
   })
 
   it('Basic mode never sends tilt_model or reads vectors', () => {
-    const basic = { ...form([global()]), mode: 'basic', tiltAzimuth: '45' }
+    const basic = { ...form([vec()]), mode: 'basic', tiltAzimuth: '45' }
     const payload = buildProcessPayload(basic)
     expect(payload).not.toHaveProperty('tilt_model')
     expect(payload.tilt_azimuth).toBe('45')
@@ -150,7 +141,7 @@ describe('buildProcessPayload in vectors mode', () => {
   })
 
   it('Advanced with the azimuth source is unchanged: azimuth, factor and an azimuth model', () => {
-    const f = form([global()], { tiltAzimuth: '45' }, { directionSource: 'azimuth' })
+    const f = form([vec()], { tiltAzimuth: '45' }, { directionSource: 'azimuth' })
     const payload = buildProcessPayload(f)
     expect(payload.tilt_azimuth).toBe('45')
     expect(JSON.parse(payload.tilt_model).direction).toEqual({ type: 'azimuth' })
@@ -164,11 +155,12 @@ describe('buildProcessPayload in vectors mode', () => {
 })
 
 describe('describeTiltModel in vectors mode', () => {
-  it('counts vectors and custom tilts, naming the global profile only when it is used', () => {
-    expect(describeTiltModel(advanced([global(), custom(), custom()]), null, null)).toBe(
-      '3 vectors (2 custom), global linear · hinge at spillway'
+  it('counts the vectors and names the one profile', () => {
+    expect(describeTiltModel(advanced([vec(), vec(), vec()]), null, null)).toBe(
+      '3 vectors, linear · hinge at spillway'
     )
-    expect(describeTiltModel(advanced([custom()]), null, null)).toBe('1 vector (1 custom) · hinge at spillway')
-    expect(describeTiltModel(advanced([global()]), null, null)).toBe('1 vector, global linear · hinge at spillway')
+    expect(describeTiltModel(advanced([vec()]), null, null)).toBe('1 vector, linear · hinge at spillway')
+    const poly = advanced([vec()], { profile: { ...DEFAULT_PROFILE, family: 'polynomial', formula: '2e-4 x^2' } })
+    expect(describeTiltModel(poly, null, null)).toBe('1 vector, polynomial, 2e-4 x^2 · hinge at spillway')
   })
 })

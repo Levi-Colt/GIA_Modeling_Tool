@@ -1,12 +1,9 @@
 import { useEffect } from 'react'
 import { useProcessing } from '../../context/ProcessingContext.jsx'
-import { Help, NumberField, Segmented } from './fields.jsx'
-import { CURVATURE_INPUTS, curvatureForm } from '../../utils/tiltModel.js'
-import { CUSTOM_FAMILIES, isCustom, parseVector } from '../../utils/vectors.js'
+import { Help } from './fields.jsx'
+import { parseVector } from '../../utils/vectors.js'
 
 // Help text is generic and unit-only (the tool is location-agnostic).
-const LOCAL_GRADIENT_HELP =
-  'Gradient at this vector’s own location, measured in its direction (the uplift direction).'
 const RANGE_HELP = 'Range of influence: how far this vector’s direction is trusted. It is not a magnitude.'
 
 // Fit is shown in amber above this many degrees of misfit.
@@ -32,86 +29,9 @@ function TextCell({ id, label, value, onChange, placeholder, invalid, required =
   )
 }
 
-function CustomRow({ vector, n, onPatch }) {
-  const c = vector.custom
-  const setCustom = (patch) => onPatch({ custom: { ...c, ...patch } })
-  const form = curvatureForm(c)
-  return (
-    <tr className="bg-gray-50">
-      <td colSpan={8} className="px-2 pb-3 pt-1">
-        <div className="space-y-2 border-l-2 border-gray-300 pl-3">
-          <div className="text-xs font-medium text-gray-600">Custom tilt for vector {n}</div>
-          <div className="grid grid-cols-2 gap-2">
-            <label className="block text-xs font-medium text-gray-700">
-              Family
-              <select
-                value={c.family}
-                aria-label={`Vector ${n} custom family`}
-                onChange={(e) => setCustom({ family: e.target.value })}
-                className="mt-1 w-full"
-              >
-                {CUSTOM_FAMILIES.map((f) => (
-                  <option key={f.value} value={f.value}>
-                    {f.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <NumberField
-              label={`Vector ${n} local gradient (m/km)`}
-              placeholder="m/km"
-              required
-              value={c.localGradient}
-              onChange={(localGradient) => setCustom({ localGradient })}
-            />
-          </div>
-          <Help>{LOCAL_GRADIENT_HELP}</Help>
-          {c.family === 'quadratic' && (
-            <div className="space-y-2">
-              <Segmented
-                label={`Vector ${n} curvature from`}
-                options={CURVATURE_INPUTS}
-                value={form}
-                onChange={(curvatureInput) => setCustom({ curvatureInput })}
-              />
-              {form === 'secondGradient' ? (
-                <div className="grid grid-cols-2 gap-2">
-                  <NumberField
-                    label={`Vector ${n} second gradient (m/km)`}
-                    placeholder="m/km"
-                    required
-                    value={c.secondGradient}
-                    onChange={(secondGradient) => setCustom({ secondGradient })}
-                  />
-                  <NumberField
-                    label={`Vector ${n} distance (km) up the uplift direction from this vector`}
-                    placeholder="km"
-                    positive
-                    required
-                    value={c.secondGradientDistanceKm}
-                    onChange={(secondGradientDistanceKm) => setCustom({ secondGradientDistanceKm })}
-                  />
-                </div>
-              ) : (
-                <NumberField
-                  label={`Vector ${n} rate of increase (m/km per km)`}
-                  placeholder="m/km per km"
-                  required
-                  value={c.rateOfIncrease}
-                  onChange={(rateOfIncrease) => setCustom({ rateOfIncrease })}
-                />
-              )}
-            </div>
-          )}
-        </div>
-      </td>
-    </tr>
-  )
-}
-
-// The vectors table (artboard B): #, Lat, Lon, Azim °, Range km, Tilt, Fit °,
-// remove. Vectors are always *drawn on the map* (rows are created only by the map);
-// the table is where their start point, azimuth and range are then adjusted
+// The vectors table (artboard B): #, Lat, Lon, Azim °, Range km, Fit °, remove.
+// Vectors are always *drawn on the map* (rows are created only by the map); the
+// table is where their start point, azimuth and range are then adjusted
 // precisely. Selecting a row (focus or click) selects its arrow on the map, and
 // vice versa.
 export default function VectorTable() {
@@ -190,7 +110,6 @@ export default function VectorTable() {
                 <th scope="col" className="px-1 py-1 font-normal">Lon</th>
                 <th scope="col" className="px-1 py-1 font-normal">Azim °</th>
                 <th scope="col" className="whitespace-nowrap px-1 py-1 font-normal" title={RANGE_HELP}>Range km</th>
-                <th scope="col" className="px-1 py-1 font-normal">Tilt</th>
                 <th scope="col" className="whitespace-nowrap px-1 py-1 font-normal" title="Direction misfit of the fitted surface at this vector">
                   Fit °
                 </th>
@@ -198,14 +117,14 @@ export default function VectorTable() {
               </tr>
             </thead>
             <tbody>
-              {vectors.flatMap((v, i) => {
+              {vectors.map((v, i) => {
                 const n = i + 1
                 const p = parseVector(v)
                 const misfit = fits?.[i]?.misfit_deg
                 const hasFit = Number.isFinite(misfit)
                 const warn = hasFit && misfit > FIT_WARN_DEG
                 const selected = v.id === selectedId
-                const rows = [
+                return (
                   <tr
                     key={v.id}
                     id={`vector-row-${v.id}`}
@@ -258,17 +177,6 @@ export default function VectorTable() {
                         onChange={(rangeKm) => patch(v.id, { rangeKm })}
                       />
                     </td>
-                    <td className="px-1 py-1">
-                      <select
-                        aria-label={`Vector ${n} tilt`}
-                        value={v.tilt}
-                        onChange={(e) => patch(v.id, { tilt: e.target.value })}
-                        className="w-full min-w-[5.5rem] px-1 py-0.5 text-sm"
-                      >
-                        <option value="global">Global</option>
-                        <option value="custom">Custom</option>
-                      </select>
-                    </td>
                     <td
                       aria-label={`Vector ${n} fit`}
                       className={`px-1 py-1 tabular-nums ${warn ? 'font-medium text-amber-600' : 'text-gray-600'}`}
@@ -287,13 +195,7 @@ export default function VectorTable() {
                       </button>
                     </td>
                   </tr>
-                ]
-                if (isCustom(v)) {
-                  rows.push(
-                    <CustomRow key={`${v.id}-custom`} vector={v} n={n} onPatch={(fields) => patch(v.id, fields)} />
-                  )
-                }
-                return rows
+                )
               })}
             </tbody>
           </table>

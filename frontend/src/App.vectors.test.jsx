@@ -95,7 +95,7 @@ describe('App in vectors mode', () => {
     expect(screen.getByLabelText('Vector 1 azimuth')).toHaveValue('28.0')
     expect(screen.getByLabelText('Vector 1 range (km)')).toHaveValue('12.3')
     expect(mapProps.mapData.vectors).toHaveLength(1)
-    expect(mapProps.mapData.vectors[0]).toMatchObject({ number: 1, azimuthDeg: 28, rangeKm: 12.3, selected: true, custom: false })
+    expect(mapProps.mapData.vectors[0]).toMatchObject({ number: 1, azimuthDeg: 28, rangeKm: 12.3, selected: true })
 
     await user.click(screen.getByRole('button', { name: 'Undo' }))
     expect(screen.queryByLabelText('Vector 1 latitude')).not.toBeInTheDocument()

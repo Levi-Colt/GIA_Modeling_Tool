@@ -58,7 +58,7 @@ describe('multiple directions', () => {
     expect(multiBox()).toBeChecked()
     expect(screen.queryByLabelText('Single azimuth')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Draw vector' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByText('Global profile (whole DEM)')).toBeInTheDocument()
+    expect(screen.getByText('Profile')).toBeInTheDocument()
     // The gradient at the spillway is still there (the global profile's), and the hinge.
     expect(screen.getByLabelText('Gradient at spillway (m/km)')).toBeInTheDocument()
     expect(screen.getByLabelText('Hinge behind spillway')).toBeInTheDocument()
@@ -124,12 +124,12 @@ describe('vectors table', () => {
     withVectors([v])
 
     const headers = screen.getAllByRole('columnheader').map((h) => h.textContent)
-    expect(headers).toEqual(['#', 'Lat', 'Lon', 'Azim °', 'Range km', 'Tilt', 'Fit °', 'Remove'])
+    expect(headers).toEqual(['#', 'Lat', 'Lon', 'Azim °', 'Range km', 'Fit °', 'Remove'])
     expect(screen.getByLabelText('Vector 1 latitude')).toHaveValue('45')
     expect(screen.getByLabelText('Vector 1 longitude')).toHaveValue('-105')
     expect(screen.getByLabelText('Vector 1 azimuth')).toHaveValue('30')
     expect(screen.getByLabelText('Vector 1 range (km)')).toHaveValue('80')
-    expect(screen.getByLabelText('Vector 1 tilt')).toHaveValue('global')
+    expect(screen.queryByLabelText('Vector 1 tilt')).not.toBeInTheDocument() // no per-vector tilt
   })
 
   it('editing a cell edits the vector (the map redraws from the same row)', async () => {
@@ -239,65 +239,23 @@ describe('vectors table', () => {
   })
 })
 
-describe('custom rows', () => {
-  it('choosing Custom expands a row below with the family and local gradient; Global hides it, keeping values', async () => {
-    const user = userEvent.setup()
+describe('no per-vector tilt', () => {
+  it('rows have no Tilt column and no custom-tilt controls: magnitude comes from the Profile block only', () => {
     renderBody()
-    withVectors([global()])
-    expect(screen.queryByText('Custom tilt for vector 1')).not.toBeInTheDocument()
-
-    await user.selectOptions(screen.getByLabelText('Vector 1 tilt'), 'custom')
-    expect(screen.getByText('Custom tilt for vector 1')).toBeInTheDocument()
-    expect(screen.getByLabelText('Vector 1 custom family')).toHaveValue('linear')
-    await user.type(screen.getByLabelText('Vector 1 local gradient (m/km)'), '0.6')
-    expect(screen.getByLabelText('Vector 1 local gradient (m/km)')).toHaveAttribute('placeholder', 'm/km')
-
-    await user.selectOptions(screen.getByLabelText('Vector 1 tilt'), 'global')
-    expect(screen.queryByText('Custom tilt for vector 1')).not.toBeInTheDocument()
-    expect(ctx.formState.advanced.vectors[0].custom.localGradient).toBe('0.6') // kept
+    withVectors([global(), global({ lon: '-104' })])
+    expect(screen.queryByRole('columnheader', { name: 'Tilt' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/Vector \d tilt/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Custom tilt for vector/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/local gradient/i)).not.toBeInTheDocument()
   })
 
-  it('a quadratic has the same "Curvature from" control as the global profile, second gradient by default', async () => {
-    const user = userEvent.setup()
+  it('the one gradient and profile apply to every vector: they sit under the Profile heading', () => {
     renderBody()
-    withVectors([customV()])
-    await user.selectOptions(screen.getByLabelText('Vector 1 custom family'), 'quadratic')
-
-    const group = screen.getByRole('group', { name: 'Vector 1 curvature from' })
-    expect(within(group).getByRole('button', { name: 'Second gradient' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByLabelText('Vector 1 second gradient (m/km)')).toBeInTheDocument()
-    expect(screen.getByLabelText(/Vector 1 distance \(km\) up the uplift direction from this vector/)).toHaveAttribute(
-      'placeholder',
-      'km'
-    )
-    expect(screen.queryByLabelText(/Vector 1 rate of increase/)).not.toBeInTheDocument()
-
-    await user.type(screen.getByLabelText('Vector 1 second gradient (m/km)'), '1.2')
-    await user.click(within(group).getByRole('button', { name: 'Rate of increase' }))
-    const rate = screen.getByLabelText('Vector 1 rate of increase (m/km per km)')
-    expect(rate).toHaveAttribute('placeholder', 'm/km per km')
-    await user.type(rate, '4e-3')
-    expect(ctx.formState.advanced.vectors[0].custom).toMatchObject({
-      family: 'quadratic', curvatureInput: 'rate', rateOfIncrease: '4e-3', secondGradient: '1.2' // hidden value kept
-    })
-  })
-
-  it('shows the muted note only while every vector is custom, and the fields stay editable', () => {
-    renderBody()
-    withVectors([customV(), customV()])
-    expect(
-      screen.getByText('Global profile not used — every vector has a custom tilt. The hinge below still applies.')
-    ).toBeInTheDocument()
+    withVectors([global(), global({ lon: '-104' })])
+    expect(screen.getByText('Profile')).toBeInTheDocument()
     expect(screen.getByLabelText('Gradient at spillway (m/km)')).toBeEnabled()
-
-    act(() => ctx.setVectors((l) => [...l, global()]))
-    expect(screen.queryByText(/Global profile not used/)).not.toBeInTheDocument()
-  })
-
-  it('has no note for an empty list', () => {
-    renderBody()
-    withVectors([])
-    expect(screen.queryByText(/Global profile not used/)).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Profile family')).toBeEnabled()
+    expect(screen.queryByText(/Global profile/)).not.toBeInTheDocument()
   })
 })
 

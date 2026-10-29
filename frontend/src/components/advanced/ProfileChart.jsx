@@ -5,10 +5,8 @@ import { formatNumber, guardNote } from '../../utils/tiltModel.js'
 // Uplift-vs-distance preview for the Advanced tilt model: a small hand-rolled
 // SVG (no charting dependency). `preview` is formState.profilePreview:
 // { status: 'loading' | 'ready' | 'error', data, error } | null, where `data`
-// is /api/profile-preview's response. `secondGradient` ({ gradient, distanceKm },
-// or null) marks the user's second-gradient point on the curve while that
-// curvature form is active. The zero line is the spillway (the code calls it the
-// origin).
+// is /api/profile-preview's response. The zero line is the spillway (the code
+// calls it the origin).
 
 const W = 440
 const H = 160
@@ -29,23 +27,19 @@ export function upliftAt({ d_km: d, uplift_m: u }, x) {
 }
 
 // "Uplift versus distance from the spillway: from −20 m at −54 km (hinge) to 310 m at 180 km"
-export function describeCurve({ d_km: d, uplift_m: u, hinge_km: hinge }, secondGradient = null) {
+export function describeCurve({ d_km: d, uplift_m: u, hinge_km: hinge }) {
   const last = d.length - 1
   const hingeInRange = hinge !== null && hinge !== undefined && hinge > d[0] && hinge <= d[last]
   // Behind the hinge uplift is flat, so the curve effectively starts there.
   const startD = hingeInRange ? hinge : d[0]
   const startU = u[0]
-  const marked =
-    secondGradient && upliftAt({ d_km: d, uplift_m: u }, secondGradient.distanceKm) !== null
-      ? `; second gradient of ${formatNumber(secondGradient.gradient)} m/km marked at ${formatNumber(secondGradient.distanceKm)} km`
-      : ''
   return (
     `Uplift versus distance from the spillway: from ${formatNumber(startU)} m at ${formatNumber(startD)} km` +
-    `${hingeInRange ? ' (hinge)' : ''} to ${formatNumber(u[last])} m at ${formatNumber(d[last])} km${marked}`
+    `${hingeInRange ? ' (hinge)' : ''} to ${formatNumber(u[last])} m at ${formatNumber(d[last])} km`
   )
 }
 
-function Curve({ data, secondGradient }) {
+function Curve({ data }) {
   const { d_km: d, uplift_m: u, hinge_km: hinge } = data
   const last = d.length - 1
   const dMin = d[0]
@@ -80,12 +74,11 @@ function Curve({ data, secondGradient }) {
   const xTicks = niceTicks(dMin, dMax, 5)
   const yTicks = niceTicks(uMin, uMax, 4)
   const originVisible = dMin <= 0 && dMax >= 0
-  const markedU = secondGradient ? upliftAt(data, secondGradient.distanceKm) : null
 
   return (
     <svg
       role="img"
-      aria-label={describeCurve(data, secondGradient)}
+      aria-label={describeCurve(data)}
       viewBox={`0 0 ${W} ${H}`}
       className="w-full"
       style={{ maxWidth: W }}
@@ -154,26 +147,11 @@ function Curve({ data, secondGradient }) {
           strokeWidth="1.5"
         />
       )}
-      {markedU !== null && (
-        <g data-testid="second-gradient-marker">
-          <title>{`Second gradient: ${formatNumber(secondGradient.gradient)} m/km at ${formatNumber(secondGradient.distanceKm)} km`}</title>
-          <rect
-            x={x(secondGradient.distanceKm) - 3.5}
-            y={y(markedU) - 3.5}
-            width="7"
-            height="7"
-            transform={`rotate(45 ${x(secondGradient.distanceKm)} ${y(markedU)})`}
-            fill="#2563eb"
-            stroke="#fff"
-            strokeWidth="1"
-          />
-        </g>
-      )}
     </svg>
   )
 }
 
-export default function ProfileChart({ preview, secondGradient = null }) {
+export default function ProfileChart({ preview }) {
   const data = preview?.data ?? null
   const warnings = data?.warnings ?? []
 
@@ -182,7 +160,7 @@ export default function ProfileChart({ preview, secondGradient = null }) {
       <div className="text-xs text-gray-500">Uplift preview</div>
       {data ? (
         <div className={preview.status === 'loading' ? 'opacity-60' : undefined}>
-          <Curve data={data} secondGradient={secondGradient} />
+          <Curve data={data} />
         </div>
       ) : (
         <p className="rounded-md bg-gray-50 px-3 py-6 text-center text-xs text-gray-500">

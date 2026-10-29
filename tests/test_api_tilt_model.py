@@ -1,8 +1,9 @@
 """
 API tests for the `tilt_model` form field, `run_parameters.json`, and
 POST /api/profile-preview (documentation/UPLIFT_MODEL_SPEC.md D4/D7, as amended
-by UPLIFT_MODEL_CORRECTIONS_SPEC.md: hinge modes origin | distance | none, and a
-quadratic curvature given as a rate or as a second gradient).
+by UPLIFT_MODEL_CORRECTIONS_SPEC.md: hinge modes origin | distance | none), with the
+profile families linear, quadratic (a rate of increase) and polynomial (a formula
+of `a x^p` terms -- see tests/test_profile_formula.py for the formula grammar).
 
 Calls api.main handlers directly (in-process), like the other API tests.
 """
@@ -44,10 +45,6 @@ def _tm(**overrides):
 
 def _linear(**overrides):
     return _tm(**{"profile": {"family": "linear"}, **overrides})
-
-
-def _second(gradient, distance):
-    return {"gradient_m_per_km": gradient, "distance_km": distance}
 
 
 def _run(file_path, tilt_model, tilt_factor=20.0, include_dem=False, azimuth=90):
@@ -98,75 +95,42 @@ def _bad_cases():
         (json.dumps(_tm(**{"hinge.km": 2})), "unknown key: 'hinge.km'"),
         (json.dumps(no_profile), "profile is required"),
         (json.dumps(_tm(**{"profile.family": "cubic"})), "family must be one of"),
-        # quadratic: exactly one curvature form
+        # quadratic: a rate of increase (the second-gradient form was removed)
         (
             json.dumps(_tm(**{"profile.rate_of_increase": None})),
-            "requires rate_of_increase or second_gradient",
+            "A quadratic profile requires rate_of_increase",
         ),
         (
-            json.dumps(_tm(**{"profile.second_gradient": _second(1.0, 100)})),
-            "either rate_of_increase or second_gradient, not both",
+            json.dumps(_tm(**{"profile.second_gradient": {"gradient_m_per_km": 1.0, "distance_km": 100}})),
+            "unknown key: 'profile.second_gradient'",
         ),
-        (json.dumps(_tm(**{"profile.coefficients": [0.1]})), "quadratic profile does not take coefficients"),
+        (json.dumps(_tm(**{"profile.coefficients": [0.1]})), "unknown key: 'profile.coefficients'"),
+        (json.dumps(_tm(**{"profile.formula": "1e-4 x^2"})), "quadratic profile does not take a formula"),
         (json.dumps(_tm(**{"profile.rate_of_increase": "0.5"})), "profile.rate_of_increase"),
         (
             '{"version":1,"direction":{"type":"azimuth"},'
             '"profile":{"family":"quadratic","rate_of_increase":NaN}}',
             "requires a finite rate_of_increase",
         ),
-        # second_gradient
-        (
-            json.dumps(_tm(**{"profile.rate_of_increase": None, "profile.second_gradient": _second(1.0, 0)})),
-            "distance_km must be finite and > 0",
-        ),
-        (
-            json.dumps(_tm(**{"profile.rate_of_increase": None, "profile.second_gradient": _second(1.0, -5)})),
-            "distance_km must be finite and > 0",
-        ),
-        (
-            '{"version":1,"direction":{"type":"azimuth"},"profile":{"family":"quadratic",'
-            '"second_gradient":{"gradient_m_per_km":Infinity,"distance_km":100}}}',
-            "gradient_m_per_km must be finite",
-        ),
-        (
-            '{"version":1,"direction":{"type":"azimuth"},"profile":{"family":"quadratic",'
-            '"second_gradient":{"gradient_m_per_km":1.0,"distance_km":NaN}}}',
-            "distance_km must be finite and > 0",
-        ),
-        (
-            json.dumps(_tm(**{"profile.rate_of_increase": None,
-                              "profile.second_gradient": {"gradient_m_per_km": 1.0}})),
-            "second_gradient.distance_km is required",
-        ),
-        (
-            json.dumps(_tm(**{"profile.rate_of_increase": None,
-                              "profile.second_gradient": {**_second(1.0, 100), "foo": 1}})),
-            "unknown key: 'profile.second_gradient.foo'",
-        ),
-        # other families
-        (json.dumps(_linear(**{"profile": {"family": "linear", "second_gradient": _second(1.0, 100)}})),
-         "linear profile takes none of"),
+        # linear
         (json.dumps(_linear(**{"profile": {"family": "linear", "rate_of_increase": 0.1}})),
-         "linear profile takes none of"),
-        (json.dumps(_linear(**{"profile": {"family": "linear", "coefficients": [0.1]}})),
-         "linear profile takes none of"),
+         "linear profile takes neither rate_of_increase nor formula"),
+        (json.dumps(_linear(**{"profile": {"family": "linear", "formula": "1e-4 x^2"}})),
+         "linear profile takes neither rate_of_increase nor formula"),
+        # polynomial: a formula
+        (json.dumps(_tm(**{"profile": {"family": "polynomial"}})), "polynomial profile requires a formula"),
         (
-            json.dumps(_tm(**{"profile": {"family": "polynomial"}})),
-            "requires 1 to 4 finite coefficients",
-        ),
-        (
-            json.dumps(_tm(**{"profile": {"family": "polynomial", "coefficients": [0.1] * 5}})),
-            "requires 1 to 4 finite coefficients",
-        ),
-        (
-            json.dumps(_tm(**{"profile": {"family": "polynomial", "coefficients": [0.1], "rate_of_increase": 0.1}})),
+            json.dumps(_tm(**{"profile": {"family": "polynomial", "formula": "1e-4 x^2", "rate_of_increase": 0.1}})),
             "polynomial profile does not take rate_of_increase",
         ),
-        (
-            json.dumps(_tm(**{"profile": {"family": "polynomial", "coefficients": [0.1],
-                                          "second_gradient": _second(1.0, 100)}})),
-            "polynomial profile does not take second_gradient",
-        ),
+        (json.dumps(_tm(**{"profile": {"family": "polynomial", "formula": 5}})), "profile.formula"),
+        (json.dumps(_tm(**{"profile": {"family": "polynomial", "formula": ""}})), "Enter a formula"),
+        (json.dumps(_tm(**{"profile": {"family": "polynomial", "formula": "1e-4 x"}})),
+         "profile.formula: Every term needs an exponent"),
+        (json.dumps(_tm(**{"profile": {"family": "polynomial", "formula": "1e-4 x^6"}})),
+         "Exponents must be whole numbers from 2 to 5"),
+        (json.dumps(_tm(**{"profile": {"family": "polynomial", "formula": "1e-4 x^2 + 3"}})),
+         "Constant terms aren't allowed"),
         # hinge
         (json.dumps(_tm(**{"hinge.mode": "natural"})),
          "hinge mode 'natural' was removed; use 'none' (the zero-gradient guard still applies)."),
@@ -201,14 +165,6 @@ def test_non_finite_tilt_factor_with_tilt_model_is_422(sloped_dem_path):
     assert "finite" in exc.value.detail
 
 
-def test_non_finite_tilt_factor_with_second_gradient_is_422(sloped_dem_path):
-    model = _tm(**{"profile.rate_of_increase": None, "profile.second_gradient": _second(1.0, 50)})
-    with pytest.raises(HTTPException) as exc:
-        _run(sloped_dem_path, json.dumps(model), tilt_factor=float("inf"))
-    assert exc.value.status_code == 422
-    assert "finite" in exc.value.detail
-
-
 def test_linear_with_no_hinge_mode_is_a_valid_run(sloped_dem_path):
     # linear + none: the profile simply continues behind the spillway.
     response = _run(sloped_dem_path, json.dumps(_linear(**{"hinge.mode": "none"})))
@@ -228,7 +184,7 @@ def test_valid_quadratic_run_returns_200_with_run_parameters(sloped_dem_path):
         "version": 1,
         "direction": {"type": "azimuth"},
         "profile": {
-            "family": "quadratic", "rate_of_increase": 0.5, "second_gradient": None, "coefficients": None,
+            "family": "quadratic", "rate_of_increase": 0.5, "formula": None, "coefficients": None,
         },
         "hinge": {"mode": "none", "distance_km": None},
     }
@@ -257,28 +213,30 @@ def test_run_parameters_record_the_mode_as_the_hinge_source(sloped_dem_path):
     assert params["hinge_source"] == "guard"
 
 
-def test_second_gradient_is_converted_to_a_rate_and_both_forms_are_recorded(sloped_dem_path):
-    # k = (gradient - tilt_factor) / distance = (30 - 20) / 10 = 1.0
-    model = _tm(**{"profile.rate_of_increase": None, "profile.second_gradient": _second(30.0, 10.0)})
-    params = _run_parameters(_run(sloped_dem_path, json.dumps(model)))
-    assert params["tilt_model"]["profile"]["rate_of_increase"] == pytest.approx(1.0)
-    assert params["tilt_model"]["profile"]["second_gradient"] == _second(30.0, 10.0)
+def test_a_formula_is_parsed_to_coefficients_and_both_are_recorded(sloped_dem_path):
+    model = _tm(**{"profile": {"family": "polynomial", "formula": "2e-4 x^2 - 1.5e-7 x^3"}})
+    profile = _run_parameters(_run(sloped_dem_path, json.dumps(model)))["tilt_model"]["profile"]
+    assert profile == {
+        "family": "polynomial", "rate_of_increase": None,
+        "formula": "2e-4 x^2 - 1.5e-7 x^3", "coefficients": [2e-4, -1.5e-7],
+    }
 
 
-def test_rate_form_records_no_second_gradient(sloped_dem_path):
-    profile = _run_parameters(_run(sloped_dem_path, json.dumps(_tm())))["tilt_model"]["profile"]
-    assert profile["rate_of_increase"] == 0.5 and profile["second_gradient"] is None
+def test_a_gap_in_the_exponents_is_filled_with_zero_coefficients(sloped_dem_path):
+    model = _tm(**{"profile": {"family": "polynomial", "formula": "1e-9 x^4"}})
+    profile = _run_parameters(_run(sloped_dem_path, json.dumps(model)))["tilt_model"]["profile"]
+    assert profile["coefficients"] == [0.0, 0.0, 1e-9]
 
 
-def test_second_gradient_run_matches_the_equivalent_rate_run(sloped_dem_path):
-    # Azimuth 0 (north): the sloped fixture's contour runs north-south, so a
-    # north-dependent uplift is what bends it.
+def test_a_quadratic_formula_run_matches_the_equivalent_rate_run(sloped_dem_path):
+    # c2 = k / 2, so the quadratic with rate 1.0 is the formula 0.5 x^2. Azimuth 0
+    # (north): the sloped fixture's contour runs north-south, so a north-dependent
+    # uplift is what bends it.
     by_rate = _contour(_run(sloped_dem_path, json.dumps(
         _tm(**{"profile.rate_of_increase": 1.0, "hinge.mode": "origin"})), azimuth=0))
-    by_second = _contour(_run(sloped_dem_path, json.dumps(
-        _tm(**{"profile.rate_of_increase": None, "profile.second_gradient": _second(30.0, 10.0),
-               "hinge.mode": "origin"})), azimuth=0))
-    assert by_rate["features"] == by_second["features"]
+    by_formula = _contour(_run(sloped_dem_path, json.dumps(
+        _tm(**{"profile": {"family": "polynomial", "formula": "0.5 x^2"}, "hinge.mode": "origin"})), azimuth=0))
+    assert by_rate["features"] == by_formula["features"]
 
 
 def test_basic_run_records_null_tilt_model_and_hinge(sloped_dem_path):
@@ -306,7 +264,7 @@ def test_run_parameters_contents(sloped_dem_path):
 
 
 def test_tilt_model_changes_the_output_relative_to_basic(sloped_dem_path):
-    # Azimuth 0 (north): see test_second_gradient_run_matches_the_equivalent_rate_run.
+    # Azimuth 0 (north): see test_a_quadratic_formula_run_matches_the_equivalent_rate_run.
     def contour(tilt_model):
         return _contour(_run(sloped_dem_path, tilt_model, azimuth=0))
 
@@ -410,25 +368,20 @@ def test_preview_forward_sign_change_is_a_warning():
     assert any("changes sign" in w for w in out["warnings"])  # g = 0.35 - 0.006 d flips ~58 km
 
 
-def test_preview_second_gradient_curve_passes_through_the_given_gradient():
-    # Gradient 0.7 m/km at 50 km, from 0.35 at the spillway: k = 0.007. The
-    # nominal range with 201 samples has a sample at exactly d = 50.
-    model = _tm(**{"profile.rate_of_increase": None, "profile.second_gradient": _second(0.7, 50.0),
-                   "hinge.mode": "origin"})
+def test_preview_formula_curve_matches_its_coefficients():
+    # U(d) = g0 d + 2e-4 d^2 - 1e-7 d^3, so g(d) = g0 + 4e-4 d - 3e-7 d^2.
+    model = _tm(**{"profile": {"family": "polynomial", "formula": "2e-4 x^2 - 1e-7 x^3"}, "hinge.mode": "origin"})
     out = _preview(tilt_model=model, origin=None, bounds_wgs84=None, samples=201)
     i = out["d_km"].index(50.0)
-    assert out["gradient_m_per_km"][i] == pytest.approx(0.7)
-    # And it is the same curve as the equivalent rate.
-    by_rate = _preview(tilt_model=_tm(**{"profile.rate_of_increase": 0.007, "hinge.mode": "origin"}),
-                       origin=None, bounds_wgs84=None, samples=201)
-    assert out["uplift_m"] == pytest.approx(by_rate["uplift_m"])
+    assert out["gradient_m_per_km"][i] == pytest.approx(G0 + 4e-4 * 50.0 - 3e-7 * 50.0 ** 2)
+    assert out["uplift_m"][i] == pytest.approx(G0 * 50.0 + 2e-4 * 50.0 ** 2 - 1e-7 * 50.0 ** 3)
 
 
 def test_preview_uses_the_same_validation_messages_as_process():
     with pytest.raises(HTTPException) as exc:
         _preview(tilt_model=_tm(**{"profile.rate_of_increase": None}))
     assert exc.value.status_code == 422
-    assert "requires rate_of_increase or second_gradient" in exc.value.detail
+    assert "A quadratic profile requires rate_of_increase" in exc.value.detail
 
     with pytest.raises(HTTPException) as exc:
         _preview(tilt_model=_tm(**{"hinge.mode": "natural"}))

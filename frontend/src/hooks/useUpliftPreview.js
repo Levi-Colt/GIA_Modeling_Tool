@@ -3,7 +3,6 @@ import { useProcessing } from '../context/ProcessingContext.jsx'
 import { upliftPreview } from '../api/client.js'
 import { getReadiness } from '../utils/readiness.js'
 import { buildTiltModel, usingVectors } from '../utils/tiltModel.js'
-import { anyGlobal, normalizeVectors } from '../utils/vectors.js'
 
 export const UPLIFT_PREVIEW_DEBOUNCE_MS = 500
 
@@ -29,10 +28,8 @@ export function useUpliftPreview() {
 
   let body = null
   if (ready) {
-    const global = anyGlobal(normalizeVectors(formState.advanced.vectors))
     body = {
-      // Only while some vector uses the global profile (see buildProcessPayload).
-      ...(global ? { tilt_factor: Number(formState.tiltFactor) } : {}),
+      tilt_factor: Number(formState.tiltFactor),
       tilt_model: buildTiltModel(formState.advanced),
       origin: formState.resolvedOrigin,
       bounds_wgs84: formState.boundsWgs84

@@ -8,7 +8,7 @@ import TiltModelBody from '../advanced/TiltModelBody.jsx'
 import { getReadiness, parseSelectionRadiusKm } from '../../utils/readiness.js'
 import { usingPoints, usingVectors } from '../../utils/tiltModel.js'
 import { normalizeShorePoints, surfaceOf } from '../../utils/shorePoints.js'
-import { anyGlobal, isCustom, normalizeVectors } from '../../utils/vectors.js'
+import { normalizeVectors } from '../../utils/vectors.js'
 import { STEPS, scrollToStep } from '../../utils/steps.js'
 
 // "028°" -- azimuth zero-padded to three integer digits, like a compass bearing.
@@ -70,11 +70,9 @@ export default function AdvancedForm({ focusRequest }) {
   let tiltSummary = `${formatAzimuth(tiltAzimuth)} · ${tiltFactor} m/km${family === 'linear' ? '' : ` · ${family}`}`
   if (usingVectors(formState)) {
     const vectors = normalizeVectors(formState.advanced.vectors)
-    const custom = vectors.filter(isCustom).length
     tiltSummary =
       `${vectors.length} ${vectors.length === 1 ? 'vector' : 'vectors'}` +
-      `${custom ? ` (${custom} custom)` : ''}` +
-      `${anyGlobal(vectors) ? ` · ${tiltFactor} m/km global${family === 'linear' ? '' : ` · ${family}`}` : ''}`
+      ` · ${tiltFactor} m/km${family === 'linear' ? '' : ` · ${family}`}`
   }
 
   if (usingPoints(formState)) {

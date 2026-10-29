@@ -7,16 +7,15 @@ there) and an optional *range of influence* (how far its direction is trusted;
 not a magnitude). The model blends the vectors' unit directions into a smooth
 field v(x) on a small regular grid, solves in least squares for a curved
 distance coordinate phi with grad(phi) ~ v (its contours are the isobases), and
-turns phi into uplift U either through the global profile (Case A, every vector
-uses it) or by integrating a blended gradient field (Case B, some vector has a
-custom tilt).
+turns phi into uplift U through the one global profile (magnitude never varies
+per vector; the vectors only steer the direction).
 
 Everything is done in `backend.main`'s local frame (`_local_en_km`, east/north
 km from the origin) -- never a second projection -- and the result is a
 `GridUpliftModel`: `evaluate(east_km, north_km)` bilinearly samples a grid,
 so per-block work is elementwise and the windowed and in-memory pipelines agree.
 
-Case A deviates from the spec's "U precomputed on the grid" deliberately: the
+This deviates from the spec's "U precomputed on the grid" deliberately: the
 grid holds phi and the (cheap, exact) profile is applied per pixel after
 sampling. Sampling U instead smears the hinge kink and the profile's curvature
 by O(h) / O(h^2) relative to the grid, which no tolerance worth asserting could
@@ -38,7 +37,7 @@ from scipy.ndimage import map_coordinates
 from skimage.measure import find_contours
 
 from backend.main import _local_en_km, _local_en_to_lonlat, _raster_diagonal_km
-from backend.uplift import HINGE_MODES, DEFAULT_HINGE_MODE, PolynomialProfile, _profile_from_spec
+from backend.uplift import DEFAULT_HINGE_MODE, PolynomialProfile, _profile_from_spec
 
 GRID_CELLS = 255            # cells on the long side => at most 256 nodes
 GRID_PADDING = 0.05         # each side, fraction of the DEM's frame extent
@@ -56,42 +55,33 @@ class Vector:
     lat: float
     azimuth_deg: float
     range_km: float | None = None
-    # None = uses the global profile, else
-    # {"family": "linear" | "quadratic", "local_gradient": g, "rate_of_increase": k | None}
-    custom: dict | None = None
 
 
 @dataclass(frozen=True, eq=False)
 class GridUpliftModel:
     """
-    Uplift sampled from a regular frame grid (row index increases northward).
-
-    `profile is None`: `values` is U itself (Case B) and `evaluate` returns the
-    bilinear sample. `profile` given: `values` is phi (Case A) and `evaluate`
-    returns `profile.U(max(phi, hinge_d))`.
+    Uplift from a regular frame grid of phi, the curved distance coordinate
+    (row index increases northward): `evaluate` bilinearly samples phi, clamps it
+    at the hinge and applies the global profile, `profile.U(max(phi, hinge_d))`.
     """
     e0: float               # frame km of the south-west node
     n0: float
     h: float                # node spacing, km
-    values: np.ndarray      # (rows, cols)
-    profile: PolynomialProfile | None = None
+    values: np.ndarray      # phi, (rows, cols)
+    profile: PolynomialProfile
     hinge_d: float | None = None
     hinge_source: str | None = None
 
     @property
     def extra_bytes_per_pixel(self):
-        # Two float64 coordinate arrays + the sampled output = 24 B; Case A adds
-        # the hinge clamp copy (8) and the profile's temporaries (0 linear, 16
+        # Two float64 coordinate arrays + the sampled output = 24 B, plus the
+        # hinge clamp copy (8) and the profile's temporaries (0 linear, 16
         # otherwise). Estimated, not profiled -- see backend/app.py's notes.
-        if self.profile is None:
-            return 24
         return 24 + 8 + (0 if len(self.profile.coeffs) == 1 else 16)
 
     def evaluate(self, east_km, north_km):
         east, north = np.broadcast_arrays(east_km, north_km)
         sampled = _sample(self.values, self.e0, self.n0, self.h, east, north)
-        if self.profile is None:
-            return sampled
         if self.hinge_d is not None:
             sampled = np.maximum(sampled, self.hinge_d)
         return self.profile.U(sampled)
@@ -101,25 +91,6 @@ def _sample(grid, e0, n0, h, east, north):
     """Bilinear sample of a frame grid; positions outside it clamp to the edge."""
     coords = np.stack([(north - n0) / h, (east - e0) / h])
     return map_coordinates(grid, coords, order=1, mode="nearest")
-
-
-def _resolve_hinge(profile, hinge):
-    """(d_h, source) for the global hinge, with the zero-gradient guard when a
-    global profile exists; from the mode alone when every vector is custom."""
-    hinge = hinge or {}
-    mode = hinge.get("mode") or DEFAULT_HINGE_MODE
-    distance_km = hinge.get("distance_km")
-    if profile is not None:
-        return profile.resolve_hinge(mode, distance_km)
-    if mode == "origin":
-        return 0.0, "mode"
-    if mode == "distance":
-        if distance_km is None or not np.isfinite(distance_km) or distance_km <= 0:
-            raise ValueError("A 'distance' hinge requires distance_km > 0 and finite.")
-        return -float(distance_km), "mode"
-    if mode == "none":
-        return None, None
-    raise ValueError(f"Unknown hinge mode '{mode}'. Expected one of {HINGE_MODES}.")
 
 
 def _make_solver(ny, nx, h, pin_row, pin_col):
@@ -233,13 +204,13 @@ def build_vector_uplift_model(vectors, origin_coords, raster_transform, raster_s
     Builds (GridUpliftModel, diagnostics) from `Vector`s, in the local frame of
     the raster described by (raster_transform, raster_shape).
 
-    global_profile: PolynomialProfile or None (None only when every vector has a
-    custom tilt). hinge: {"mode", "distance_km"} or None ('origin'); resolved
-    exactly as PlanarUpliftModel does when a global profile exists.
+    global_profile: the PolynomialProfile that gives the magnitude everywhere.
+    hinge: {"mode", "distance_km"} or None ('origin'); resolved exactly as
+    PlanarUpliftModel does.
 
     diagnostics: misfit_deg (per vector, None when the vector lies outside the
     grid), misfit_rms_deg / misfit_max_deg / worst_vector (0-based; None when no
-    vector could be measured), degenerate_fraction, ranges_km, case ('A' | 'B'),
+    vector could be measured), degenerate_fraction, ranges_km,
     hinge_km / hinge_source, phi_grid, and grid {e0, n0, h, nx, ny,
     diagonal_km, origin} (what the isobase generator needs).
 
@@ -249,8 +220,8 @@ def build_vector_uplift_model(vectors, origin_coords, raster_transform, raster_s
     vectors = list(vectors)
     if not vectors:
         raise ValueError("At least one vector is required.")
-    if any(v.custom is None for v in vectors) and global_profile is None:
-        raise ValueError("A global profile is required because a vector uses it.")
+    if global_profile is None:
+        raise ValueError("A global profile is required.")
     for v in vectors:
         if not all(np.isfinite(x) for x in (v.lon, v.lat, v.azimuth_deg)):
             raise ValueError("Vector lon, lat and azimuth must be finite numbers.")
@@ -357,44 +328,12 @@ def build_vector_uplift_model(vectors, origin_coords, raster_transform, raster_s
             UserWarning,
         )
 
-    # --- Step 5: uplift ---
-    hinge_d, hinge_source = _resolve_hinge(global_profile, hinge)
-    all_global = all(v.custom is None for v in vectors)
-    if all_global:
-        case = "A"
-        model = GridUpliftModel(e0=e0, n0=n0, h=h, values=phi, profile=global_profile,
-                                hinge_d=hinge_d, hinge_source=hinge_source)
-        hinge_km = hinge_d
-    else:
-        case = "B"
-        phi_at_vector = _sample(phi, e0, n0, h, ve, vn)
-        g_sum = np.zeros((ny, nx))
-        for i, v in enumerate(vectors):
-            w, _ = weights(i)
-            c = v.custom
-            if c is None:
-                g_i = global_profile.g(phi)
-            elif c["family"] == "linear":
-                g_i = c["local_gradient"] + 0.0 * phi
-            else:  # quadratic: equals local_gradient at the vector's own phi
-                g_i = c["local_gradient"] + c["rate_of_increase"] * (phi - phi_at_vector[i])
-            g_sum += w * g_i
-        gradient = g_sum / sum_w
-        if hinge_d is not None:
-            gradient = np.where(phi < hinge_d, 0.0, gradient)
-        # Guard (every mode): uplift never re-increases behind the spillway.
-        guard = (phi < 0.0) & (gradient < 0.0)
-        gradient = np.where(guard, 0.0, gradient)
-        hinge_km, hinge_source_b = hinge_d, ("mode" if hinge_d is not None else None)
-        if guard.any():
-            # Where the guard, not the mode, sets the clamp, report the extent it
-            # reached (approximate: the field has no single zero-gradient point).
-            hinge_km, hinge_source_b = float(phi[guard].max()), "guard"
-        hinge_source = hinge_source_b
-        u = integrate(gradient * field_e, gradient * field_n)
-        u = u - origin_value(u)
-        model = GridUpliftModel(e0=e0, n0=n0, h=h, values=u, profile=None,
-                                hinge_d=hinge_km, hinge_source=hinge_source)
+    # --- Step 5: uplift, through the one global profile ---
+    hinge = hinge or {}
+    hinge_d, hinge_source = global_profile.resolve_hinge(hinge.get("mode") or DEFAULT_HINGE_MODE,
+                                                         hinge.get("distance_km"))
+    model = GridUpliftModel(e0=e0, n0=n0, h=h, values=phi, profile=global_profile,
+                            hinge_d=hinge_d, hinge_source=hinge_source)
 
     diagnostics = {
         "misfit_deg": misfit_list,
@@ -403,8 +342,7 @@ def build_vector_uplift_model(vectors, origin_coords, raster_transform, raster_s
         "worst_vector": worst,
         "degenerate_fraction": degenerate_fraction,
         "ranges_km": [float(r) for r in ranges],
-        "case": case,
-        "hinge_km": hinge_km,
+        "hinge_km": hinge_d,
         "hinge_source": hinge_source,
         "phi_grid": phi,
         "grid": {"e0": e0, "n0": n0, "h": h, "nx": nx, "ny": ny,
@@ -417,18 +355,15 @@ def build_vector_model_from_spec(spec, tilt_factor, origin_coords, raster_transf
                                  grid_cells=GRID_CELLS):
     """
     Builds the model from the API layer's validated `tilt_model` dict with
-    `direction.type == 'vectors'` (see api/tilt_model.py). `tilt_factor` (c1 of
-    the global profile) may be None only when every vector is custom, in which
-    case the spec's `profile` is unused.
+    `direction.type == 'vectors'` (see api/tilt_model.py). `tilt_factor` is c1 of
+    the global profile.
     """
     vectors = [
         Vector(lon=float(v["lon"]), lat=float(v["lat"]), azimuth_deg=float(v["azimuth_deg"]),
-               range_km=v.get("range_km"), custom=v.get("custom"))
+               range_km=v.get("range_km"))
         for v in spec["direction"]["vectors"]
     ]
-    profile = None
-    if spec.get("profile") is not None and tilt_factor is not None:
-        profile = _profile_from_spec(spec["profile"], tilt_factor)
+    profile = _profile_from_spec(spec["profile"], tilt_factor)
     return build_vector_uplift_model(
         vectors, origin_coords, raster_transform, raster_shape, profile, spec.get("hinge"),
         grid_cells=grid_cells,

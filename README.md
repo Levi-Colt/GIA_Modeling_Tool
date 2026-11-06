@@ -2,20 +2,18 @@
 This tool uses modern DEM data to simulate glacial isostatic adjustment (GIA) for the purpose of identifying potential paleo strandlines.
 
 ## How it works
-Given a DEM GeoTIFF, an origin point, a tilt direction and magnitude, and a target elevation, the tool:
+The tool answers one question: *where would an old shoreline (strandline) sit today if the land has since been warped by glacial isostatic adjustment?* You anchor the model at a **spillway**, the outlet that held the lake at a known level. The land there is treated as unmoved, and the rest of the DEM is "un-uplifted" relative to it. The strandline is the contour at the spillway's elevation on the corrected surface.
 
-1. **Inspects the input file** (`raster_io_check`) against the system's available RAM to decide whether it's safe to load the whole DEM into memory, or whether it needs to be streamed through in tiles instead.
-2. **Applies a directional planar tilt** (`calculate_tilt`) across the DEM, modeling the effect of glacial isostatic rebound/depression away from an origin point.
-3. **Extracts a strandline contour** (`extract_strandline_contours`) at a target paleo-elevation from the tilted surface.
-4. **Writes the result to a GeoPackage** (`write_dem_to_gpkg` + GeoPandas), optionally embedding the modified DEM as a raster layer alongside the strandline contour vector layer, so both ship as a single `.gpkg` file.
-
-### Standard vs. windowed pipeline
-`backend/app.py`'s `process_dem` is the orchestration entry point. It runs the pre-flight RAM check and routes to one of two pipelines:
-
-- **Standard (in-memory) pipeline** — `load_DEM` → `calculate_tilt` → `extract_strandline_contours`. Used when the DEM comfortably fits within a safe fraction of available RAM.
-- **Windowed (streamed) pipeline** — `tilt_DEM_windowed` → `extract_strandline_contours_windowed`. Used for DEMs too large to load in one pass; both functions process the raster in fixed-size tiles (`tile_size`), writing/reading incrementally rather than holding the whole array in memory at once.
-
-Both pipelines converge on the same output step, and are verified against each other for equivalent results (see Testing below).
+1. **Load a DEM.** Drop in a GeoTIFF or type its path on the server. The tool checks the file (CRS, size, memory needs) and shows it on the map. Non-WGS84 DEMs are reprojected to WGS84 automatically.
+2. **Place the spillway.** Type its latitude/longitude in decimal degrees, or pick it on the map. The strandline is contoured at the DEM's elevation at that point; if the spillway lies off the DEM or on nodata, you enter the elevation yourself.
+3. **Describe the uplift.** Uplift is zero at the spillway and grows with distance in the uplift direction. Choose how to describe it:
+   * **Basic:** one uplift direction (azimuth) and the gradient at the spillway (meters of uplift per km). This is the simplest mode.
+   * **Advanced, single direction:** the same, plus a profile shape (linear, quadratic or polynomial) and what happens behind the spillway. A live chart previews the profile.
+   * **Advanced, multiple directions:** draw several direction vectors on the map, each with an azimuth and an optional range of influence, and the tool blends them into a smoothly varying field.
+   * **Advanced, shore points:** if you have shoreline elevation measurements, import or enter them and the tool fits an uplift surface to them directly. The fit statistics and residuals are shown so you can judge it.
+4. **Set output options.** Optionally keep only contours within a chosen distance of the spillway, and choose whether to include the corrected DEM in the output.
+5. **Run and review.** The map shows the strandline contour and, for the advanced modes, uplift contours (isobases). Any warnings from the run are listed with the results.
+6. **Download.** You get a zip containing the GeoPackage, a GeoJSON of the contour, and a record of the parameters used (see [Usage](#usage)).
 
 ## Installation
 ```bash
@@ -190,7 +188,31 @@ normal operation), point `GIA_STORAGE_DIR` at a directory there before
 starting uvicorn.
 
 ## Usage
-Run from the repository root (so `backend/` resolves as an importable package):
+
+### Using the web app
+1. Start the app by following [Running the app from a JupyterLab session](#running-the-app-from-a-jupyterlab-session) (or [CryoCloud](#running-in-cryocloud)) and open it in your browser.
+2. Work down the four sections: **DEM**, **Origin** (the spillway), **Tilt** and **Output**. Each field shows its state: gray is optional, blue is required and empty, green is valid, red is invalid. The **Run** button enables once every required field is valid.
+3. Use the **Basic / Advanced** switch above Run to move between a single-page form and collapsible sections with the extra uplift options. Switching never clears what you entered.
+4. Press **Run**. A large DEM can take a while; the progress indicator is indeterminate while it works.
+5. On the results screen, inspect the contour on the map and read the warnings, then download the zip.
+
+Very large DEMs are handled automatically: the tool checks available memory and processes the raster in tiles when it won't fit.
+
+### What you get back
+The download is a zip bundle:
+
+| File | Contents |
+|---|---|
+| `strandlines.gpkg` | The strandline contour layer, plus the corrected DEM as a raster layer if you included it. |
+| `contour.geojson` | The same contour as GeoJSON (EPSG:4326). |
+| `preview_tilted.tif` | A small decimated preview of the corrected DEM (only when the DEM was included). |
+| `run_parameters.json` | Everything the run used, plus fit diagnostics, so the run can be reproduced. |
+| `shore_points.csv` | The shore points used (only for shore-point runs); it can be re-imported. |
+
+The full request/response contract is in [api-README.md](documentation/api-README.md).
+
+### Using the Python API directly
+You can skip the web app and call the geoprocessing pipeline from Python. Run from the repository root (so `backend/` resolves as an importable package):
 ```python
 from backend.app import process_dem
 
@@ -202,8 +224,10 @@ process_dem(
     target_elevation=1200,          # paleo-elevation to contour, in meters
     output_gpkg_path="output/strandlines.gpkg",
     include_dem=True,               # also embed the tilted DEM as a raster layer
+    selection_radius_km=None,       # optional: keep only contours within N km of the origin
 )
 ```
+This runs the basic single-direction linear model. It expects a DEM already in EPSG:4326, so reprojection and origin handling that the web app does for you are not applied. Other uplift models can be passed through `uplift_model=` (see `backend/uplift.py`).
 
 ## Testing
 The test suite covers every function in `backend/main.py` individually, the standard/windowed pipelines' equivalence, and `backend/app.py`'s orchestration layer end-to-end, using synthetic in-memory-generated GeoTIFFs rather than real DEM data.

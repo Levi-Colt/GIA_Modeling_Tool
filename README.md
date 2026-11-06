@@ -15,15 +15,6 @@ The tool answers one question: *where would an old shoreline (strandline) sit to
 5. **Run and review.** The map shows the strandline contour and, for the advanced modes, uplift contours (isobases). Any warnings from the run are listed with the results.
 6. **Download.** You get a zip containing the GeoPackage, a GeoJSON of the contour, and a record of the parameters used (see [Usage](#usage)).
 
-## Installation
-```bash
-pip install -r setup/requirements.txt
-```
-For running the test suite, install the dev dependencies instead (this also installs everything in `setup/requirements.txt`):
-```bash
-pip install -r setup/requirements-dev.txt
-```
-
 ## Running the app from a JupyterLab session
 
 The full stack (backend + API + built frontend) is served by a single FastAPI
@@ -211,34 +202,6 @@ The download is a zip bundle:
 
 The full request/response contract is in [api-README.md](documentation/api-README.md).
 
-### Using the Python API directly
-You can skip the web app and call the geoprocessing pipeline from Python. Run from the repository root (so `backend/` resolves as an importable package):
-```python
-from backend.app import process_dem
-
-process_dem(
-    file_path="test_data/my_dem.tif",
-    origin_coords=(-110.5, 45.2),   # (lon, lat) tilt origin
-    tilt_azimuth=210,               # degrees, direction of tilt
-    tilt_factor=0.1,                # meters of elevation change per km, per unit distance
-    target_elevation=1200,          # paleo-elevation to contour, in meters
-    output_gpkg_path="output/strandlines.gpkg",
-    include_dem=True,               # also embed the tilted DEM as a raster layer
-    selection_radius_km=None,       # optional: keep only contours within N km of the origin
-)
-```
-This runs the basic single-direction linear model. It expects a DEM already in EPSG:4326, so reprojection and origin handling that the web app does for you are not applied. Other uplift models can be passed through `uplift_model=` (see `backend/uplift.py`).
-
-## Testing
-The test suite covers every function in `backend/main.py` individually, the standard/windowed pipelines' equivalence, and `backend/app.py`'s orchestration layer end-to-end, using synthetic in-memory-generated GeoTIFFs rather than real DEM data.
-
-`pytest.ini` lives in `setup/`, not the repo root, so it needs to be pointed
-to explicitly -- plain `pytest` won't pick it up:
-```bash
-pytest -c setup/pytest.ini --rootdir=.              # run the full suite
-pytest -c setup/pytest.ini --rootdir=. -m cryocloud  # also run tests that only meaningfully validate real system RAM behavior inside a CryoCloud container
-```
-
 ## Known limitations
 A few behaviors are intentional trade-offs or documented gaps rather than bugs, and are worth knowing about:
 
@@ -246,6 +209,8 @@ A few behaviors are intentional trade-offs or documented gaps rather than bugs, 
 - **No `nodata` value is declared on GeoPackage raster output** — NaN values round-trip correctly as bit patterns, but downstream tools that rely on an explicit nodata tag (rather than recognizing NaN by convention) will treat those cells as literal data.
 - **Multi-tile DEM mosaicking is not yet supported.** Input DEMs are expected as a single GeoTIFF; if a study area spans multiple source tiles (e.g., multiple 1°x1° USGS tiles), the user is currently responsible for mosaicking them beforehand.
 - **DEM inputs are automatically reprojected to WGS84.** Regardless of the CRS of the input DEM, once uploaded, the input DEM is reprojected to WGS84. This is done to enforce CRS uniformity and simplify the map visualization, tilt calculation, and contouring workflows. This also means any products the user downloads will also be in WGS84.
+
+## Documentation
 
 ### Backend / geoprocessing
 * [rasterio](https://rasterio.readthedocs.io/en/stable/) - Reading/writing GeoTIFF and GeoPackage raster data, and windowed/tiled I/O for large files.

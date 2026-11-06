@@ -26,11 +26,148 @@ For running the test suite, install the dev dependencies instead (this also inst
 pip install -r setup/requirements-dev.txt
 ```
 
+## Running the app from a JupyterLab session
+
+The full stack (backend + API + built frontend) is served by a single FastAPI
+process on one port. You start it from a terminal inside JupyterLab and open
+it in your browser, either directly or through `jupyter-server-proxy`. The
+steps below cover a JupyterLab on your own computer (Windows or macOS); the
+[CryoCloud](#running-in-cryocloud) section covers the hosted JupyterHub.
+
+### 1. Install conda (once)
+
+Skip this if `conda --version` already works in your terminal.
+
+**macOS**
+```bash
+brew install --cask miniforge        # or download the installer from
+                                     # https://github.com/conda-forge/miniforge/releases/latest
+conda init zsh                       # use `conda init bash` if your shell is bash
+```
+Close and reopen the terminal; the prompt should start with `(base)`.
+
+**Windows** (PowerShell)
+```powershell
+winget install CondaForge.Miniforge3 --override "/S /D=C:\Users\Public\miniforge3"
+C:\Users\Public\miniforge3\Scripts\conda.exe init powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+Close and reopen PowerShell; the prompt should start with `(base)`.
+
+* The install path must **not contain a space**. The default
+  (`C:\Users\<First Last>\miniforge3`) fails when your user name has one, and
+  `C:\miniforge3` fails without admin rights, which is why the command above
+  installs under `C:\Users\Public`.
+* `Set-ExecutionPolicy` is needed so PowerShell may load the profile script
+  `conda init` writes; without it `conda` stays "not recognized".
+
+### 2. Get the code and create the environment (once)
+
+Run from any terminal where `conda` works (the repo can live anywhere; a path
+with spaces is fine here).
+
+**macOS**
+```bash
+git clone <repo URL> GIA_Modeling_Tool
+cd GIA_Modeling_Tool
+conda env create -f setup/environment.yml
+```
+
+**Windows** (PowerShell)
+```powershell
+git clone <repo URL> GIA_Modeling_Tool
+cd GIA_Modeling_Tool
+conda env create -f setup/environment.yml
+```
+
+This creates the `gia-modeling-tool` environment with Python 3.11, Node 20+
+and the geoprocessing/API dependencies. It can take several minutes.
+
+### 3. Add JupyterLab and the proxy (once)
+
+If you already have JupyterLab, you only need `jupyter-server-proxy` in the
+environment that runs it. The simplest route is to run JupyterLab from this
+environment:
+
+```bash
+conda activate gia-modeling-tool
+conda install -c conda-forge jupyterlab jupyter-server-proxy
+```
+(The command is the same on macOS and Windows.)
+
+### 4. Build the frontend (once, and after any frontend change)
+
+**macOS**
+```bash
+conda activate gia-modeling-tool
+cd frontend && npm install && npm run build && cd ..
+```
+
+**Windows** (PowerShell 5.1 has no `&&`; use semicolons)
+```powershell
+conda activate gia-modeling-tool
+cd frontend; npm install; npm run build; cd ..
+```
+
+`npm install` prints deprecation and vulnerability warnings; they are expected
+and harmless here. The build creates `frontend/dist`, which FastAPI serves
+automatically. **If you start the server before building, `/` returns 404.**
+
+### 5. Launch JupyterLab and start the app
+
+```bash
+conda activate gia-modeling-tool     # same command on macOS and Windows
+jupyter lab                          # run from the repo root
+```
+
+In JupyterLab open **File → New → Terminal** (the **+** launcher, then
+**Terminal**). The terminal starts in the folder JupyterLab was launched from,
+so confirm you are at the repo root (`pwd` on macOS, `pwd` or `ls` in
+PowerShell), then:
+
+**macOS**
+```bash
+conda activate gia-modeling-tool
+uvicorn api.main:app --host 127.0.0.1 --port 8765
+```
+
+**Windows** (PowerShell)
+```powershell
+conda activate gia-modeling-tool
+uvicorn api.main:app --host 127.0.0.1 --port 8765
+```
+
+Pick any free port. `Errno 10048` (Windows) or `address already in use`
+(macOS) means the port is taken; choose another. Leave the terminal open while
+you use the app and stop the server with `Ctrl+C`.
+
+### 6. Open the app
+
+* Through the proxy: `http://localhost:8888/proxy/8765/` (use your own Jupyter
+  port and keep the trailing slash).
+* Or directly: `http://127.0.0.1:8765/`. On your own computer the proxy is
+  optional.
+
+To check the server itself, open `http://127.0.0.1:8765/api/health`.
+
+### Troubleshooting
+
+| Symptom | Likely cause / fix |
+|---|---|
+| `conda` is not recognized (Windows) | Execution policy blocks the profile: run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then open a new PowerShell. If it persists, rerun the `conda init` line from step 1. |
+| Miniforge installer: "contains 1 space" | Install to a path without spaces (step 1). |
+| Miniforge installer: "not writable" | Don't install to `C:\`; use `C:\Users\Public\miniforge3` or an administrator shell. |
+| `conda: command not found` (macOS) | Run `conda init zsh` (or `bash`) and reopen the terminal. |
+| `/` returns `{"detail":"Not Found"}` | The frontend isn't built; do step 4, then restart uvicorn. |
+| Blank page | Missing trailing slash on the proxy URL, or a stale build; rebuild. |
+| 404 at `/proxy/<port>/` | Server isn't running, wrong port, or `jupyter-server-proxy` isn't installed in the environment running JupyterLab. |
+| `ModuleNotFoundError: backend` | Start uvicorn from the repo root. |
+
 ## Running in CryoCloud
 
-The full stack (backend + API + built frontend, all served by one FastAPI
-process) is meant to run inside your own CryoCloud (NASA/2i2c JupyterHub)
-pod, exposed via `jupyter-server-proxy`. 
+On CryoCloud (NASA/2i2c JupyterHub) the same stack runs inside your own pod,
+exposed via `jupyter-server-proxy`, which is already installed there. Use the
+terminal in your JupyterLab session:
 
 ```bash
 conda env create -f setup/environment.yml
@@ -43,6 +180,8 @@ Then reach it at the pod's `jupyter-server-proxy` URL:
 `/user/<your-username>/proxy/<PORT>/`. This is a manually-launched proxy
 target, not a registered server-proxy extension, so no 2i2c/CryoCloud admin
 coordination is required.
+
+### Job storage
 
 By default, job workspaces (uploaded/intermediate/output files) live under
 the OS temp directory and are cleaned up after each request. If you'd
@@ -86,6 +225,21 @@ A few behaviors are intentional trade-offs or documented gaps rather than bugs, 
 
 ## Documentation
 
+### Project documents (`documentation/`)
+* [api-README.md](documentation/api-README.md) - The API contract: every route, request fields, response shape and headers, and the contents of the `/api/process` zip bundle.
+* [frontend-README.md](documentation/frontend-README.md) - Frontend structure and what is implemented vs. stubbed.
+* [UPLIFT_MODEL_SPEC.md](documentation/UPLIFT_MODEL_SPEC.md) and [UPLIFT_MODEL_CORRECTIONS_SPEC.md](documentation/UPLIFT_MODEL_CORRECTIONS_SPEC.md) - Pluggable uplift models (linear, quadratic, polynomial profiles; hinge modes). Where they conflict, the corrections spec wins.
+* [VECTOR_FIELD_SPEC.md](documentation/VECTOR_FIELD_SPEC.md) - Multi-direction (vector) uplift fields.
+* [SHORE_POINT_SURFACE_SPEC.md](documentation/SHORE_POINT_SURFACE_SPEC.md) - Fitting an uplift surface directly from shoreline elevation points.
+* [SELECTION_RADIUS_SPEC.md](documentation/SELECTION_RADIUS_SPEC.md) - Optional filter that keeps only contours near the origin.
+* [PERFORMANCE_OPTIMIZATION_SPEC.md](documentation/PERFORMANCE_OPTIMIZATION_SPEC.md) - Diagnosis and measurements behind the tilt calculation and tiling choices (background, not a live spec).
+* [VISUALIZATION_PIPELINE_SPEC.md](documentation/VISUALIZATION_PIPELINE_SPEC.md) - How input previews and result previews reach the map.
+* [LAYOUT_AND_MODES_SPEC.md](documentation/LAYOUT_AND_MODES_SPEC.md) - The page layout and the Basic/Advanced input modes.
+* [MAP_QOL_SPEC.md](documentation/MAP_QOL_SPEC.md) - Map quality-of-life features (basemaps and related).
+* [GIA_Tool_Penpot_Spec.md](documentation/GIA_Tool_Penpot_Spec.md) - Wireframe rationale and component contracts.
+* [FRONTEND_REVIEW.md](documentation/FRONTEND_REVIEW.md) - Notes from a UI walkthrough.
+* [CLAUDE.md](CLAUDE.md) - Architecture, design decisions and open items (the most current overview).
+
 ### Backend / geoprocessing
 * [rasterio](https://rasterio.readthedocs.io/en/stable/) - Reading/writing GeoTIFF and GeoPackage raster data, and windowed/tiled I/O for large files.
 * [scikit-image (skimage.measure)](https://scikit-image.org/docs/stable/auto_examples/edges/plot_contours.html) - Finds constant-value (contour) paths in the tilted DEM array.
@@ -94,6 +248,7 @@ A few behaviors are intentional trade-offs or documented gaps rather than bugs, 
 * [Shapely](https://shapely.readthedocs.io/) - Creation, manipulation, clipping, and merging of the resulting vector geometries (including stitching contour fragments across tile boundaries) before they're serialized into a GeoPackage.
 * [GeoPandas](https://geopandas.org/en/stable/docs.html) - Configuring and exporting the strandline contour vector layer to GeoPackage.
 * [psutil](https://psutil.readthedocs.io/en/latest/) - Queries live system memory availability to decide between the standard and windowed pipelines.
+* [SciPy](https://docs.scipy.org/doc/scipy/) - Sparse least-squares solves and bilinear sampling for the vector direction fields, plus convex hulls for the shore-point surface.
 * [pytest](https://docs.pytest.org/en/stable/) - Test suite framework, including fixtures for synthetic raster generation and markers for environment-dependent tests.
 
 ### API layer
@@ -108,5 +263,7 @@ A few behaviors are intentional trade-offs or documented gaps rather than bugs, 
 * [Leaflet](https://leafletjs.com/) - Interactive map rendering for the input/result preview panel.
 * [georaster](https://github.com/GeoTIFF/georaster) - Parses GeoTIFF bytes returned by `/api/raster-preview` and `/api/process` into an in-browser raster object.
 * [georaster-layer-for-leaflet](https://github.com/GeoTIFF/georaster-layer-for-leaflet) - Renders those parsed rasters (the input DEM preview and the tilted DEM result) directly as a Leaflet layer in-browser.
-* [Turf.js](https://turfjs.org/) (`@turf/destination`, `@turf/bbox`) - Geodesic point projection for the client-side tilt-azimuth line, and bounding-box math for fitting the map view to the result contour.
-* [fflate](https://github.com/101arrowz/fflate) - Client-side unzip of `/api/process`'s bundled response (strandline `.gpkg` + contour GeoJSON + optional tilted-DEM preview).
+* [Turf.js](https://turfjs.org/) (`@turf/destination`, `@turf/bbox`, `@turf/bearing`, `@turf/distance`, `@turf/boolean-point-in-polygon`) - Geodesic point projection for the client-side azimuth line, bearing/distance math for drawn uplift vectors, point-in-polygon checks, and bounding-box math for fitting the map view to the result contour.
+* [fflate](https://github.com/101arrowz/fflate) - Client-side unzip of `/api/process`'s bundled response (strandline `.gpkg` + contour GeoJSON + optional tilted-DEM preview + `run_parameters.json`).
+* [PapaParse](https://www.papaparse.com/) - CSV parsing for the shore-point import.
+* [Vitest](https://vitest.dev/) and [Testing Library](https://testing-library.com/docs/react-testing-library/intro/) - Frontend test runner and component-testing utilities (`npm test` in `frontend/`).

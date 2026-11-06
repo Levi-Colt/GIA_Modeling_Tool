@@ -223,23 +223,6 @@ A few behaviors are intentional trade-offs or documented gaps rather than bugs, 
 - **Multi-tile DEM mosaicking is not yet supported.** Input DEMs are expected as a single GeoTIFF; if a study area spans multiple source tiles (e.g., multiple 1°x1° USGS tiles), the user is currently responsible for mosaicking them beforehand.
 - **DEM inputs are automatically reprojected to WGS84.** Regardless of the CRS of the input DEM, once uploaded, the input DEM is reprojected to WGS84. This is done to enforce CRS uniformity and simplify the map visualization, tilt calculation, and contouring workflows. This also means any products the user downloads will also be in WGS84.
 
-## Documentation
-
-### Project documents (`documentation/`)
-* [api-README.md](documentation/api-README.md) - The API contract: every route, request fields, response shape and headers, and the contents of the `/api/process` zip bundle.
-* [frontend-README.md](documentation/frontend-README.md) - Frontend structure and what is implemented vs. stubbed.
-* [UPLIFT_MODEL_SPEC.md](documentation/UPLIFT_MODEL_SPEC.md) and [UPLIFT_MODEL_CORRECTIONS_SPEC.md](documentation/UPLIFT_MODEL_CORRECTIONS_SPEC.md) - Pluggable uplift models (linear, quadratic, polynomial profiles; hinge modes). Where they conflict, the corrections spec wins.
-* [VECTOR_FIELD_SPEC.md](documentation/VECTOR_FIELD_SPEC.md) - Multi-direction (vector) uplift fields.
-* [SHORE_POINT_SURFACE_SPEC.md](documentation/SHORE_POINT_SURFACE_SPEC.md) - Fitting an uplift surface directly from shoreline elevation points.
-* [SELECTION_RADIUS_SPEC.md](documentation/SELECTION_RADIUS_SPEC.md) - Optional filter that keeps only contours near the origin.
-* [PERFORMANCE_OPTIMIZATION_SPEC.md](documentation/PERFORMANCE_OPTIMIZATION_SPEC.md) - Diagnosis and measurements behind the tilt calculation and tiling choices (background, not a live spec).
-* [VISUALIZATION_PIPELINE_SPEC.md](documentation/VISUALIZATION_PIPELINE_SPEC.md) - How input previews and result previews reach the map.
-* [LAYOUT_AND_MODES_SPEC.md](documentation/LAYOUT_AND_MODES_SPEC.md) - The page layout and the Basic/Advanced input modes.
-* [MAP_QOL_SPEC.md](documentation/MAP_QOL_SPEC.md) - Map quality-of-life features (basemaps and related).
-* [GIA_Tool_Penpot_Spec.md](documentation/GIA_Tool_Penpot_Spec.md) - Wireframe rationale and component contracts.
-* [FRONTEND_REVIEW.md](documentation/FRONTEND_REVIEW.md) - Notes from a UI walkthrough.
-* [CLAUDE.md](CLAUDE.md) - Architecture, design decisions and open items (the most current overview).
-
 ### Backend / geoprocessing
 * [rasterio](https://rasterio.readthedocs.io/en/stable/) - Reading/writing GeoTIFF and GeoPackage raster data, and windowed/tiled I/O for large files.
 * [scikit-image (skimage.measure)](https://scikit-image.org/docs/stable/auto_examples/edges/plot_contours.html) - Finds constant-value (contour) paths in the tilted DEM array.

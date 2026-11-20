@@ -58,6 +58,19 @@
   was a blank page (present since before spec 4; `npm run dev` uses esbuild's
   interop and never showed it). Verify a build by loading it through FastAPI in a
   real browser, not just `npm run build` — jsdom/Vitest can't see this class of bug.
+- **Google Colab (secondary target, `setup/colab.ipynb`).** A notebook clones the
+  repo, `pip install`s `setup/requirements-api.txt`, builds the frontend (downloads
+  Node 22 into `/content` when Colab's is older than 20), starts uvicorn as a
+  background subprocess (`--host 0.0.0.0`, `GIA_STORAGE_DIR=/content/gia_jobs`,
+  log in `/content/gia_server.log`) and opens it via
+  `google.colab.kernel.proxyPort` / `serve_kernel_port_as_window`. Code cells are
+  plain Python (no `!` magics) so they can be executed outside Colab for testing;
+  they were run end to end locally, but **not yet inside a real Colab session**.
+  Large DEMs should go in by typed path (`/content/...` or a mounted Drive), not
+  by upload through Colab's proxy, whose size limit isn't known. A run profile on a
+  synthetic 6000×6000 DEM (2026-11-20) put the tilt arithmetic at ~8% of runtime
+  (GeoPackage raster write ~40%, contour tracing ~30%), so a GPU runtime/CuPy port
+  was judged not worth it; don't start one without new profiling.
 - **Routing is relative everywhere** — no leading-slash paths anywhere in
   the frontend (see `frontend/src/api/client.js` comments). Required
   because `jupyter-server-proxy` serves the app under a per-user path

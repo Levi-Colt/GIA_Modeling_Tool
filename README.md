@@ -178,10 +178,27 @@ rather they persist on the pod's persistent storage instead (not needed for
 normal operation), point `GIA_STORAGE_DIR` at a directory there before
 starting uvicorn.
 
+## Running in Google Colab
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Levi-Colt/GIA_Modeling_Tool/blob/Master/setup/colab.ipynb)
+
+[`setup/colab.ipynb`](setup/colab.ipynb) runs the whole app inside a Colab
+session: it clones the repo, installs the Python dependencies, builds the
+frontend (downloading Node 20+ if Colab's is too old), starts uvicorn in the
+background and opens the app in a new tab through Colab's port proxy. Run its
+cells top to bottom; the default CPU runtime is enough.
+
+* For large DEMs, type a server-side path instead of dragging the file in:
+  a file in `/content`, or one on Google Drive after the notebook's
+  mount-Drive cell (`/content/drive/MyDrive/...`).
+* Everything under `/content` is deleted when the Colab session ends, so
+  download each result zip.
+* The app tab only opens in the browser that's signed in to that Colab session.
+
 ## Usage
 
 ### Using the web app
-1. Start the app by following [Running the app from a JupyterLab session](#running-the-app-from-a-jupyterlab-session) (or [CryoCloud](#running-in-cryocloud)) and open it in your browser.
+1. Start the app by following [Running the app from a JupyterLab session](#running-the-app-from-a-jupyterlab-session) (or [CryoCloud](#running-in-cryocloud), or [Google Colab](#running-in-google-colab)) and open it in your browser.
 2. Work down the four sections: **DEM**, **Origin** (the spillway), **Tilt** and **Output**. Each field shows its state: gray is optional, blue is required and empty, green is valid, red is invalid. The **Run** button enables once every required field is valid.
 3. Use the **Basic / Advanced** switch above Run to move between a single-page form and collapsible sections with the extra uplift options. Switching never clears what you entered.
 4. Press **Run**. A large DEM can take a while; the progress indicator is indeterminate while it works.

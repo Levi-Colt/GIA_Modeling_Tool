@@ -80,6 +80,38 @@
   psutil alone, as before. Without this, a large DEM on a small pod on a big node
   took the in-memory path and was OOM-killed. Tested only against fake cgroup trees
   (`tests/test_cgroup_memory.py`), not yet in a real pod.
+- **Multi-core processing.** `available_cpu_count()` (`backend/main.py`) = cores in the
+  process's affinity, capped by the container CPU quota (cgroup v2 `cpu.max`, v1
+  `cpu.cfs_quota_us`/`cpu.cfs_period_us`, whole CPUs, ≥1; `os.cpu_count()` reports the
+  node's cores in a pod); `GIA_WORKERS` overrides it. `api/main.py` computes `WORKERS`
+  once at import and uses it three ways, every one bit-identical to single-threaded:
+  (1) `os.environ.setdefault("GDAL_NUM_THREADS", ...)` — GDAL reads it at use time, so
+  GeoTIFF decoding is threaded (~3.7× faster reads on 8 cores); (2)
+  `ensure_wgs84_raster(..., num_threads=WORKERS)` for the warp (~3×; **leave
+  `warp_mem_limit` at GDAL's default** — changing it changes the warp's chunking and the
+  resampled values); (3) `process_dem(workers=WORKERS)` → `calculate_tilt`/
+  `tilt_DEM_windowed` compute row-strips on a thread pool (~2× on the tilt step; numpy
+  releases the GIL), sized so `workers` strips fit one `chunk_rows` strip's memory, each
+  thread with its own `Geod`. The backend defaults are `workers=1`. **dtype trap:**
+  `calculate_tilt`'s one-pass path returns float64 (`block - U`) while its chunked path
+  returns float32, and the threaded path must return whichever the single-threaded call
+  would — `process_dem`'s in-memory run is normally the float64 one-pass case. (4) With
+  `workers > 1`, the in-memory branch runs `write_dem_to_gpkg` on a second thread while
+  tracing contours (GDAL releases the GIL; skimage holds it), when `_overlap_fits` says
+  both operations' memory (`CONTOUR_` + `GPKG_WRITE_BYTES_PER_PIXEL`) fits 60% of RAM
+  free at that moment; the `with` block waits for the write even if tracing raises, so
+  the vector layer is never written into a file mid-write. The windowed branch stays
+  sequential (its tile sizes each assume the whole budget). Measured (2026-11-20, 8 cores,
+  36 Mpx synthetic DEM, noisy machine): a whole in-memory `process_dem` 8.3 s → 5.8 s
+  (best; 5.8–7.8 s across runs); windowed 20.1 s → 12.8 s; reprojection ~3×.
+  **The GPKG raster write is slow per pixel** (~3.4 s vs 0.15 s for the same array as an
+  uncompressed GeoTIFF) and no setting fixes it: SQLite pragmas (`OGR_SQLITE_SYNCHRONOUS`,
+  `_JOURNAL`, `_CACHE`), `GDAL_CACHEMAX`, `GDAL_NUM_THREADS` and window alignment gave
+  ≤10%; `BLOCKSIZE=1024` gave ~15% but changes the file's tiling and pads small DEMs
+  (a 1024² tile per edge), so it was not adopted. Shipping the DEM as a separate GeoTIFF
+  in the zip would remove the cost but changes the bundle contract — ask first.
+  `find_contours` holds the GIL (threads give 1.0×; processes would change line
+  segmentation). Tests: `tests/test_parallel_processing.py`.
 - **Routing is relative everywhere** — no leading-slash paths anywhere in
   the frontend (see `frontend/src/api/client.js` comments). Required
   because `jupyter-server-proxy` serves the app under a per-user path

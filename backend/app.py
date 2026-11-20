@@ -1,6 +1,7 @@
 import os
 import tempfile
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 
 import geopandas as gpd
 import rasterio
@@ -61,6 +62,16 @@ MIN_CONTOUR_VERTICES = 4
 CONTOUR_SIMPLIFY_TOLERANCE_DEG = 1e-5
 
 
+def _overlap_fits(width, height):
+    """Whether contour tracing and the GPKG DEM write can run at the same time
+    without exceeding the RAM budget: both operations' working memory for the
+    whole raster must fit (checked against RAM free right now, after the DEM
+    and tilted array are already loaded)."""
+    both = CONTOUR_BYTES_PER_PIXEL + GPKG_WRITE_BYTES_PER_PIXEL
+    budget_bytes = check_available_ram_mb() * (1024 ** 2) * 0.60  # largest_safe_tile_size's fraction
+    return width * height * both <= budget_bytes
+
+
 def _as_line_list(geometry):
     """
     Normalizes a shapely geometry into a flat list of LineStrings.
@@ -83,12 +94,19 @@ def _as_line_list(geometry):
 #Simulation of your execution runtime or FastAPI Route handler
 def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
                  target_elevation, output_gpkg_path, include_dem=True,
-                 selection_radius_km=None, selection_mode="intersects", uplift_model=None):
+                 selection_radius_km=None, selection_mode="intersects", uplift_model=None,
+                 workers=1):
     """
     uplift_model: optional backend/uplift.py model (see UPLIFT_MODEL_SPEC.md).
     When given it takes precedence and tilt_azimuth/tilt_factor are ignored by
     the tilt math; when None the basic linear model is built from them, and the
     output is identical to what this function produced before uplift models.
+
+    workers: threads for the tilt arithmetic (see calculate_tilt); the output
+    is bit-identical for any value. With workers > 1, the in-memory branch also
+    writes the DEM layer while tracing contours when both fit in RAM
+    (_overlap_fits); the windowed branch stays sequential to keep its budget. GDAL's own threading (reads, reprojection)
+    is configured by the caller, e.g. via GDAL_NUM_THREADS; see api/main.py.
     """
     print("--- Starting GIA Processing ---")
 
@@ -146,7 +164,7 @@ def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
         try:
             tilted_path, tilted_transform, crs = tilt_DEM_windowed(
                 file_path, tilted_path, origin_coords, tilt_azimuth, tilt_factor,
-                tile_size=tilt_tile_size, uplift_model=uplift_model,
+                tile_size=tilt_tile_size, uplift_model=uplift_model, workers=workers,
             )
             contours = extract_strandline_contours_windowed(
                 tilted_path, target_elevation, tile_size=contour_tile_size,
@@ -164,11 +182,23 @@ def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
         chunk_rows = largest_safe_tile_size(width, height, free_ram, tilt_bytes_per_pixel)
         tilted_array = calculate_tilt(
             dem_array, transform, origin_coords, tilt_azimuth, tilt_factor, chunk_rows=chunk_rows,
-            uplift_model=uplift_model,
+            uplift_model=uplift_model, workers=workers,
         )
-        contours = extract_strandline_contours(tilted_array, transform, target_elevation)
-        if include_dem:
-            write_dem_to_gpkg(tilted_array, transform, crs, output_gpkg_path)
+        if include_dem and workers > 1 and _overlap_fits(width, height):
+            # Write the DEM layer on a second thread while tracing contours:
+            # GDAL releases the GIL for the GPKG write (slow per pixel, ~3 s per
+            # 36 Mpx), while skimage's contour tracing holds it, so the two
+            # overlap. Same writes in the same order, so the output is identical.
+            # Leaving the `with` waits for the write even if tracing raises, so
+            # the vector layer below never touches a file still being written.
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                dem_write = pool.submit(write_dem_to_gpkg, tilted_array, transform, crs, output_gpkg_path)
+                contours = extract_strandline_contours(tilted_array, transform, target_elevation)
+                dem_write.result()
+        else:
+            contours = extract_strandline_contours(tilted_array, transform, target_elevation)
+            if include_dem:
+                write_dem_to_gpkg(tilted_array, transform, crs, output_gpkg_path)
         lines = [LineString(c) for c in contours]
 
     # Drop nodata-boundary/noise artifacts, then simplify the legitimate

@@ -1,7 +1,10 @@
+import math
 import numpy as np
 import rasterio
 import os
+import threading
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 import psutil
 from pyproj import Geod
 from skimage import measure
@@ -72,6 +75,51 @@ def cgroup_available_bytes(root=CGROUP_ROOT):
         usage -= _read_stat(os.path.join(v1, "memory.stat"), "total_inactive_file")
         return max(limit - max(usage, 0), 0)
     return None
+
+
+def _cgroup_cpu_limit(root=CGROUP_ROOT):
+    """CPUs allowed by the container's CPU quota (whole CPUs, at least 1), or
+    None when there is no quota. In a Kubernetes pod os.cpu_count() reports
+    the node's cores, not the pod's limit."""
+    try:  # cgroup v2: "max 100000" or "<quota> <period>"
+        with open(os.path.join(root, "cpu.max")) as f:
+            quota, period = f.read().split()[:2]
+        if quota != "max" and int(period) > 0:
+            return max(int(quota) // int(period), 1)
+        return None
+    except (OSError, ValueError):
+        pass
+    for sub in ("cpu", "cpu,cpuacct"):  # cgroup v1: quota -1 means unlimited
+        quota = _read_int(os.path.join(root, sub, "cpu.cfs_quota_us"))
+        period = _read_int(os.path.join(root, sub, "cpu.cfs_period_us"))
+        if quota is not None and period:
+            return max(quota // period, 1) if quota > 0 else None
+    return None
+
+
+def available_cpu_count(cgroup_root=CGROUP_ROOT, env=None):
+    """
+    How many CPUs this process can actually use: the cores it's allowed to
+    run on (affinity), capped by the container's CPU quota when there is one.
+    The `GIA_WORKERS` environment variable, when set to a positive integer,
+    overrides the detection (e.g. to compare timings or leave cores free).
+    """
+    env = os.environ if env is None else env
+    override = env.get("GIA_WORKERS", "").strip()
+    if override:
+        try:
+            if int(override) > 0:
+                return int(override)
+        except ValueError:
+            pass
+    try:
+        cpus = len(os.sched_getaffinity(0))
+    except AttributeError:  # Windows/macOS have no sched_getaffinity
+        cpus = os.cpu_count() or 1
+    quota = _cgroup_cpu_limit(cgroup_root)
+    if quota is not None:
+        cpus = min(cpus, quota)
+    return max(cpus, 1)
 
 
 def check_available_ram_mb(cgroup_root=CGROUP_ROOT):
@@ -230,7 +278,7 @@ def _warn_if_origin_disconnected(transform, shape, origin_coords):
 
 
 def tilt_DEM_windowed(DEM_path, output_path, origin_coords, tilt_azimuth, tilt_factor, tile_size=512,
-                      uplift_model=None):
+                      uplift_model=None, workers=1):
     """
     Streams the DEM through uniform tile_size x tile_size windows, applying
     the directional tilt to each tile independently and writing the result
@@ -254,6 +302,9 @@ def tilt_DEM_windowed(DEM_path, output_path, origin_coords, tilt_azimuth, tilt_f
     contract load_DEM/calculate_tilt use for the standard, in-memory pipeline —
     the "data" component is a path on disk here instead of an array, since
     avoiding a full in-memory array is the whole point of windowing.
+
+    workers is passed to calculate_tilt for each block (threaded row-strips
+    within the block; reads and writes stay on this thread).
     """
     if uplift_model is None:
         uplift_model = linear_planar_model(tilt_azimuth, tilt_factor)
@@ -282,7 +333,7 @@ def tilt_DEM_windowed(DEM_path, output_path, origin_coords, tilt_azimuth, tilt_f
                     tilted_block = calculate_tilt(
                         block, window_transform, origin_coords, tilt_azimuth, tilt_factor,
                         warn_if_disconnected=False, diagonal_km=diagonal_km,
-                        uplift_model=uplift_model,
+                        uplift_model=uplift_model, workers=workers,
                     )
                     dst.write(tilted_block, 1, window=window)
     return output_path, out_transform, out_crs
@@ -607,7 +658,7 @@ def _tilt_block(block, transform, row_offset, origin_coords, uplift_model, diago
 
 def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_factor,
                     warn_if_disconnected=True, diagonal_km=None, chunk_rows=None,
-                    uplift_model=None):
+                    uplift_model=None, workers=1):
     """
     Applies a directional planar downward tilt across a DEM starting from an origin point.
     By default (uplift_model=None) that's the basic linear tilt: cells in the
@@ -642,6 +693,13 @@ def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_facto
     pipeline, since a block's local extent will rarely contain the origin even when
     the full raster does; the windowed caller performs this check once, upfront,
     against the full raster extent instead.
+
+    workers > 1 computes row-strips on that many threads (numpy releases the
+    GIL for the elementwise work). Each strip is computed from the full
+    transform and its own row offset, so the result is bit-identical to
+    workers=1 for any strip height. The strips are sized so `workers` of them
+    together stay within one `chunk_rows` strip's memory, keeping the budget
+    largest_safe_tile_size sized it for.
     """
     if warn_if_disconnected:
         _warn_if_origin_disconnected(transform, DEM_array.shape, origin_coords)
@@ -654,6 +712,18 @@ def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_facto
         uplift_model = linear_planar_model(tilt_azimuth, tilt_factor)
 
     height = DEM_array.shape[0]
+    workers = max(int(workers or 1), 1)
+    if workers > 1 and height >= 2 * workers:
+        # Match the dtype the single-threaded path would return: the one-pass
+        # path returns `block - U` as computed (float64, U being float64),
+        # the chunked path fills a float32 array.
+        single_pass = not chunk_rows or chunk_rows >= height
+        out_dtype = np.result_type(DEM_array.dtype, np.float64) if single_pass else np.float32
+        return _calculate_tilt_threaded(
+            DEM_array, transform, origin_coords, uplift_model, diagonal_km,
+            chunk_rows or height, workers, out_dtype,
+        )
+
     if not chunk_rows or chunk_rows >= height:
         return _tilt_block(DEM_array, transform, 0, origin_coords, uplift_model, diagonal_km, geod)
 
@@ -664,6 +734,31 @@ def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_facto
             DEM_array[row_start:row_end], transform, row_start, origin_coords, uplift_model,
             diagonal_km, geod,
         )
+    return out
+
+
+def _calculate_tilt_threaded(DEM_array, transform, origin_coords, uplift_model, diagonal_km,
+                             chunk_rows, workers, out_dtype):
+    """calculate_tilt's workers > 1 path (see its docstring)."""
+    height = DEM_array.shape[0]
+    rows = max(min(math.ceil(height / workers), chunk_rows // workers), 1)
+    starts = range(0, height, rows)
+    out = np.empty(DEM_array.shape, dtype=out_dtype)
+    local = threading.local()
+
+    def run(row_start):
+        geod = getattr(local, "geod", None)
+        if geod is None:  # one Geod per thread; never shared across threads
+            geod = local.geod = Geod(ellps='WGS84')
+        row_end = min(row_start + rows, height)
+        out[row_start:row_end] = _tilt_block(
+            DEM_array[row_start:row_end], transform, row_start, origin_coords, uplift_model,
+            diagonal_km, geod,
+        )
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # list() re-raises the first exception from any strip
+        list(pool.map(run, starts))
     return out
 
 def _split_at_nan_edges(rows, cols, nan_mask):

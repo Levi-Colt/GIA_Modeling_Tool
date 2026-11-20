@@ -170,6 +170,16 @@ Then reach it at the pod's `jupyter-server-proxy` URL:
 target, not a registered server-proxy extension, so no 2i2c/CryoCloud admin
 coordination is required.
 
+### CPUs and memory
+
+The app sizes itself to what your pod is allowed to use, not to the server
+the pod runs on: it reads the pod's memory and CPU limits, picks the
+in-memory or memory-saving pipeline accordingly, and uses every CPU it's
+given for reading the DEM, reprojecting it and the tilt calculation. Choosing
+a larger server option when you start CryoCloud therefore helps directly. To
+use fewer CPUs (or compare timings), set `GIA_WORKERS` to a number before
+starting uvicorn.
+
 ### Job storage
 
 By default, job workspaces (uploaded/intermediate/output files) live under

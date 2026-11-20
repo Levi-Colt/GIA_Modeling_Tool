@@ -45,7 +45,9 @@ from starlette.concurrency import run_in_threadpool
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.app import process_dem  # noqa: E402  (import after sys.path fixup, see above)
-from backend.main import raster_io_check, check_available_ram_mb, uplift_d_range_km  # noqa: E402
+from backend.main import (  # noqa: E402
+    raster_io_check, check_available_ram_mb, uplift_d_range_km, available_cpu_count,
+)
 from backend.uplift import build_uplift_model  # noqa: E402
 from backend.direction_field import build_vector_model_from_spec, isobases_geojson  # noqa: E402
 from backend.uplift_surface import (  # noqa: E402
@@ -78,6 +80,15 @@ ORIGIN_THRESHOLD_METERS = 500.0
 
 RUN_PARAMETERS_SCHEMA_VERSION = 1
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# CPUs this process may use (container CPU quota respected; GIA_WORKERS
+# overrides), detected once at startup. Used for the tilt arithmetic's threads,
+# GDAL's warp threads in reprojection, and -- via GDAL_NUM_THREADS, which GDAL
+# reads from the environment at use time -- multi-threaded GeoTIFF decoding
+# (~3.7x faster DEM reads on 8 cores). Every one of these leaves results
+# bit-identical. An explicit GDAL_NUM_THREADS set by the user is kept.
+WORKERS = available_cpu_count()
+os.environ.setdefault("GDAL_NUM_THREADS", str(WORKERS))
 
 # Warning categories meant for developers, not users: libraries (rasterio, numpy,
 # ...) raise them about their own internals, and whether they appear at all
@@ -319,7 +330,7 @@ async def process(
     # guaranteed to agree with the origin point resolved above ---
     reprojected_path = os.path.join(job_dir, "input_wgs84.tif")
     try:
-        prep = ensure_wgs84_raster(input_path, reprojected_path)
+        prep = ensure_wgs84_raster(input_path, reprojected_path, num_threads=WORKERS)
     except InvalidCRSError as e:
         raise HTTPException(status_code=422, detail=str(e))
     working_path = prep.path
@@ -390,6 +401,7 @@ async def process(
                 include_dem=include_dem,
                 selection_radius_km=selection_radius_km,
                 uplift_model=uplift_model,
+                workers=WORKERS,
             )
         backend_warnings = build_warnings + _user_warning_messages(caught)
     except FileNotFoundError as e:
@@ -729,7 +741,7 @@ async def origin_elevation(
         # than avoiding the reprojection cost here. ---
         try:
             reprojected_path = os.path.join(job_dir, "input_wgs84.tif")
-            prep = ensure_wgs84_raster(input_path, reprojected_path)
+            prep = ensure_wgs84_raster(input_path, reprojected_path, num_threads=WORKERS)
         except (InvalidCRSError, InvalidOriginError) as e:
             raise HTTPException(status_code=422, detail=str(e))
         except FileNotFoundError as e:

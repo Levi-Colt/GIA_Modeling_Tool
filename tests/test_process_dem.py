@@ -129,6 +129,10 @@ def test_windowed_branch_writes_both_layers_when_include_dem_true(tmp_path, monk
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
+        # Library deprecation notices depend on installed versions (NumPy 2.5 makes
+        # rasterio's windowed read emit one) and aren't what this test guards.
+        for category in (DeprecationWarning, PendingDeprecationWarning, FutureWarning):
+            warnings.simplefilter("ignore", category)
         app.process_dem(dem_path, ORIGIN, 90, 0.0, 450, output_path, include_dem=True)
 
     assert "strandline_contour" in gpd.list_layers(output_path)["name"].values

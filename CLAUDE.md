@@ -586,8 +586,9 @@
 - This dev machine has no conda installed (`setup/environment.yml` assumes
   one); Python deps are installed via plain `pip` (`setup/requirements-dev.txt`
   + `setup/requirements-api.txt`) into the system Python instead.
-  One pre-existing test failure
-  (`test_windowed_branch_writes_both_layers_when_include_dem_true`) is a
-  numpy-version mismatch from that setup, not a code regression — see that
-  test's own comments before assuming a new failure there is your fault.
-  (It did not reproduce when spec 4 landed: the full suite was green.)
+  With NumPy 2.5, rasterio's windowed reads emit a library DeprecationWarning
+  ("Setting the shape on a NumPy array..."). `api/main.py::_user_warning_messages`
+  drops Deprecation/PendingDeprecation/FutureWarning from everything shown to
+  users (`X-Processing-Warnings`, preview `warnings`), and
+  `test_windowed_branch_writes_both_layers_when_include_dem_true` ignores those
+  categories under its `simplefilter("error")`; the full suite is green.

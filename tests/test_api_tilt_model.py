@@ -288,6 +288,27 @@ def test_the_guard_is_information_not_a_warning(sloped_dem_path):
     assert "X-Processing-Warnings" not in response.headers
 
 
+def test_library_deprecation_warnings_do_not_reach_the_user(sloped_dem_path, monkeypatch):
+    # Library notices (e.g. NumPy 2.5's "Setting the shape on a NumPy array" from
+    # inside rasterio) depend on installed versions and mean nothing to a user;
+    # the backend's own UserWarnings must still come through.
+    import warnings
+
+    import api.main as api_main
+    real_process_dem = api_main.process_dem
+
+    def noisy_process_dem(*args, **kwargs):
+        warnings.warn("library internals are deprecated", DeprecationWarning)
+        warnings.warn("library pending change", PendingDeprecationWarning)
+        warnings.warn("library future change", FutureWarning)
+        warnings.warn("a deliberate user-facing warning", UserWarning)
+        return real_process_dem(*args, **kwargs)
+
+    monkeypatch.setattr(api_main, "process_dem", noisy_process_dem)
+    response = _run(sloped_dem_path, json.dumps(_tm()))
+    assert response.headers["X-Processing-Warnings"] == "a deliberate user-facing warning"
+
+
 # --- /api/profile-preview -------------------------------------------------------
 
 def _preview(**overrides):

@@ -739,7 +739,10 @@ A `/api/process` response also carries these headers when applicable:
 - `X-Source-CRS-Reprojected-From` -- the input raster's original CRS, if it
   wasn't already EPSG:4326.
 - `X-Processing-Warnings` -- backend `UserWarning`s, e.g. origin outside the
-  raster's extent post-tilt.
+  raster's extent post-tilt. Library `DeprecationWarning` /
+  `PendingDeprecationWarning` / `FutureWarning` notices (which depend on the
+  installed numpy/rasterio versions) are dropped here and from the preview
+  endpoints' `warnings` lists.
 - `X-Tilt-Model-Diagnostics` -- vectors mode only: compact JSON of the direction
   field's fit (`misfit_rms_deg`, `misfit_max_deg`, `worst_vector`). See "Vector
   direction field".

@@ -79,6 +79,22 @@ ORIGIN_THRESHOLD_METERS = 500.0
 RUN_PARAMETERS_SCHEMA_VERSION = 1
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Warning categories meant for developers, not users: libraries (rasterio, numpy,
+# ...) raise them about their own internals, and whether they appear at all
+# depends on the installed versions (e.g. NumPy 2.5's "Setting the shape on a
+# NumPy array" notice from inside a rasterio windowed read). The backend and API
+# never raise these on purpose -- every deliberate warning is a UserWarning -- so
+# they are dropped from what reaches the user.
+_DEVELOPER_WARNING_CATEGORIES = (DeprecationWarning, PendingDeprecationWarning, FutureWarning)
+
+
+def _user_warning_messages(caught) -> list[str]:
+    """Messages of recorded warnings worth showing a user (library deprecations dropped)."""
+    return [
+        str(w.message) for w in caught
+        if not issubclass(w.category, _DEVELOPER_WARNING_CATEGORIES)
+    ]
+
 
 @functools.lru_cache(maxsize=1)
 def _git_commit() -> str | None:
@@ -335,7 +351,7 @@ async def process(
                     build_vector_model_from_spec, parsed_tilt_model, tilt_factor,
                     (origin_lon, origin_lat), transform, shape,
                 )
-            build_warnings = [str(w.message) for w in built]
+            build_warnings = _user_warning_messages(built)
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
 
@@ -352,7 +368,7 @@ async def process(
                     build_surface_model_from_spec, parsed_tilt_model,
                     (origin_lon, origin_lat), transform, shape,
                 )
-            build_warnings = [str(w.message) for w in built]
+            build_warnings = _user_warning_messages(built)
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
 
@@ -375,7 +391,7 @@ async def process(
                 selection_radius_km=selection_radius_km,
                 uplift_model=uplift_model,
             )
-        backend_warnings = build_warnings + [str(w.message) for w in caught]
+        backend_warnings = build_warnings + _user_warning_messages(caught)
     except FileNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
@@ -393,14 +409,13 @@ async def process(
     if backend_warnings:
         # Surface backend UserWarnings (e.g. origin outside raster extent,
         # missing nodata value) to the client rather than only to server logs.
-        # `simplefilter("always")` above records every warning category, not
-        # just this codebase's own UserWarnings -- a library-internal
-        # DeprecationWarning can slip in with embedded newlines in its
-        # message, which are invalid in an HTTP header value and crash the
-        # response at send time (only visible over a real ASGI server, not
-        # the in-process calls the test suite uses). Collapse whitespace
-        # defensively so header construction never depends on what a given
-        # warning happens to say.
+        # Library deprecation notices are already dropped by
+        # `_user_warning_messages`, but any other recorded warning may still
+        # carry embedded newlines, which are invalid in an HTTP header value
+        # and crash the response at send time (only visible over a real ASGI
+        # server, not the in-process calls the test suite uses). Collapse
+        # whitespace defensively so header construction never depends on what
+        # a given warning happens to say.
         sanitized_warnings = [" ".join(w.split()) for w in backend_warnings]
         headers["X-Processing-Warnings"] = " | ".join(sanitized_warnings)[:2000]
     if diagnostics is not None:
@@ -791,7 +806,7 @@ async def profile_preview(body: ProfilePreviewRequest):
                 d_min, d_max = NOMINAL_D_RANGE_KM
                 nominal = True
             model.warn_for_range(d_min, d_max)
-        messages = [str(w.message) for w in caught]
+        messages = _user_warning_messages(caught)
         if nominal:
             messages.append(
                 "The distance range is nominal (-100 to 100 km) because the origin or DEM "
@@ -841,7 +856,7 @@ def _build_uplift_preview(parsed, tilt_factor, origin, bounds):
             parsed, tilt_factor, tuple(origin), transform, PREVIEW_RASTER_SHAPE,
         )
     isobases, interval = isobases_geojson(model, diagnostics)
-    return diagnostics, isobases, interval, [str(w.message) for w in caught]
+    return diagnostics, isobases, interval, _user_warning_messages(caught)
 
 
 @app.post("/api/uplift-preview")
@@ -898,7 +913,7 @@ def _build_surface_preview(parsed, origin, bounds):
             parsed, tuple(origin), transform, PREVIEW_RASTER_SHAPE,
         )
     isobases, interval, hull = surface_isobases_geojson(model, diagnostics)
-    return diagnostics, isobases, interval, hull, [str(w.message) for w in caught]
+    return diagnostics, isobases, interval, hull, _user_warning_messages(caught)
 
 
 @app.post("/api/fit-uplift-surface")

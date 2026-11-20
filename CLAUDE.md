@@ -71,6 +71,15 @@
   synthetic 6000×6000 DEM (2026-11-20) put the tilt arithmetic at ~8% of runtime
   (GeoPackage raster write ~40%, contour tracing ~30%), so a GPU runtime/CuPy port
   was judged not worth it; don't start one without new profiling.
+- **Pod memory limits.** In a Kubernetes pod (CryoCloud/2i2c) psutil reports the
+  *node's* memory, not the pod's limit, so `check_available_ram_mb()`
+  (`backend/main.py`) caps psutil's figure with `cgroup_available_bytes()`: the
+  cgroup v2 (`memory.max`/`memory.current`) or v1 (`memory/memory.limit_in_bytes`)
+  limit minus the working set (usage minus inactive file cache, which is what
+  Kubernetes enforces). No limit / no cgroup files (Windows, macOS, Colab's VM) →
+  psutil alone, as before. Without this, a large DEM on a small pod on a big node
+  took the in-memory path and was OOM-killed. Tested only against fake cgroup trees
+  (`tests/test_cgroup_memory.py`), not yet in a real pod.
 - **Routing is relative everywhere** — no leading-slash paths anywhere in
   the frontend (see `frontend/src/api/client.js` comments). Required
   because `jupyter-server-proxy` serves the app under a per-user path
@@ -468,7 +477,7 @@
   (4) Isobase labels are the **uplift U relative to the spillway** (`+100 m` = the land there
   is 100 m more uplifted than at the spillway; the tilted DEM is DEM − U, so it is *lowered* by
   100 m there); the map's isobase legend says so. Isobases are bright red, the strandline
-  contour near-black.
+  contour light blue (`#38bdf8`, changed from near-black so it stands out on the grayscale DEM).
 - **Field states and the shared field primitive** (FRONTEND_REVIEW items 1-4, 7, 8;
   `components/shared/Field.jsx`). Every form control gets its look from the base layer
   in `index.css` and its label/help/status from `Field`; `statusBorder`/`valueStatus`

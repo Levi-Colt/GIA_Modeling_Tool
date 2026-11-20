@@ -11,15 +11,82 @@ from shapely.ops import linemerge
 
 from backend.uplift import linear_planar_model
 
-def check_available_ram_mb():
+CGROUP_ROOT = "/sys/fs/cgroup"
+
+# cgroup v1 reports "no limit" as a huge page-aligned number (~2**63) rather
+# than a sentinel; anything at or above this is treated as unlimited.
+_CGROUP_V1_UNLIMITED = 2 ** 60
+
+
+def _read_int(path):
+    try:
+        with open(path) as f:
+            text = f.read().strip()
+    except (OSError, ValueError):
+        return None
+    if text == "max":
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _read_stat(path, key):
+    try:
+        with open(path) as f:
+            for line in f:
+                name, _, value = line.partition(" ")
+                if name == key:
+                    return int(value)
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def cgroup_available_bytes(root=CGROUP_ROOT):
     """
-    Queries the operating system layer dynamically to determine 
-    exactly how many Megabytes of free RAM are available.
-    Works locally and inside CryoCloud containers.
+    Memory still available under this process's container memory limit, in
+    bytes, or None when there is no limit to respect (not in a container, an
+    unlimited cgroup, or a platform without cgroups, e.g. Windows/macOS).
+
+    Inside a Kubernetes pod (CryoCloud/2i2c) psutil reports the *node's*
+    memory, not the pod's limit, so on its own it can greatly overstate what
+    this process may use before the kernel OOM-kills it. Usage is the
+    working set (usage minus inactive page cache), the same figure Kubernetes
+    enforces limits against, so file cache from reading a DEM doesn't make
+    the budget look smaller than it is.
     """
-    virtual_memory = psutil.virtual_memory()
-    # virtual_memory.available returns bytes -> convert to Megabytes
-    return virtual_memory.available / (1024 ** 2)
+    # cgroup v2 (unified hierarchy; files at the namespace root in a container)
+    limit = _read_int(os.path.join(root, "memory.max"))
+    if limit is not None:
+        usage = _read_int(os.path.join(root, "memory.current")) or 0
+        usage -= _read_stat(os.path.join(root, "memory.stat"), "inactive_file")
+        return max(limit - max(usage, 0), 0)
+
+    # cgroup v1
+    v1 = os.path.join(root, "memory")
+    limit = _read_int(os.path.join(v1, "memory.limit_in_bytes"))
+    if limit is not None and limit < _CGROUP_V1_UNLIMITED:
+        usage = _read_int(os.path.join(v1, "memory.usage_in_bytes")) or 0
+        usage -= _read_stat(os.path.join(v1, "memory.stat"), "total_inactive_file")
+        return max(limit - max(usage, 0), 0)
+    return None
+
+
+def check_available_ram_mb(cgroup_root=CGROUP_ROOT):
+    """
+    Queries the operating system layer dynamically to determine
+    how many Megabytes of RAM this process can still use: psutil's available
+    memory, capped by the container's memory limit when there is one (see
+    cgroup_available_bytes). Works locally and inside CryoCloud containers.
+    """
+    available = psutil.virtual_memory().available
+    in_cgroup = cgroup_available_bytes(cgroup_root)
+    if in_cgroup is not None:
+        available = min(available, in_cgroup)
+    # bytes -> Megabytes
+    return available / (1024 ** 2)
 
 def raster_io_check(DEM_path, available_ram_mb):
     """

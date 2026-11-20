@@ -15,10 +15,10 @@ import { RESIDUAL_GRADIENT, RESIDUAL_UNKNOWN, residualColor, residualExtent } fr
 const RASTER_OPACITY = 1
 
 // Isobases are bright red so they stand out on the raster; the strandline contour is
-// near-black so the two never read as the same kind of line.
+// light blue, which stands out on the grayscale DEM and never reads as an isobase.
 const ISOBASE_COLOR = '#ff0000'
 const ISOBASE_LABEL_COLOR = '#d40000'
-const CONTOUR_COLOR = '#111827'
+const CONTOUR_COLOR = '#38bdf8'
 
 // Overlay stacking, bottom to top, per the map contract: raster (tilePane, 200)
 // -> selection radius -> data hull -> isobases -> contour -> vectors -> shore

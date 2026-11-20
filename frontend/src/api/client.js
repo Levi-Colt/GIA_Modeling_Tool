@@ -1,5 +1,7 @@
 import { unzipSync } from 'fflate'
 
+import { buildDownloads } from '../utils/downloads.js'
+
 // IMPORTANT: never prefix these with a leading slash. A leading slash
 // resolves from the domain root, which breaks under jupyter-server-proxy's
 // per-user path prefix (/user/<name>/proxy/<port>/...). No leading slash
@@ -149,17 +151,18 @@ export async function runProcess(payload) {
     throw new Error(detail.detail || 'Processing failed')
   }
 
-  // Response body is now a zip bundle (strandlines.gpkg + contour.geojson +
-  // optional preview_tilted.tif), not a bare .gpkg -- see
-  // documentation/VISUALIZATION_PIPELINE_SPEC.md Stage 3. Unzip client-side with fflate;
-  // the .gpkg bytes stay a Blob for the existing download flow, contour
-  // parses straight to GeoJSON, and preview_tilted.tif (when present) is
-  // handed back as raw bytes for the caller to parse with georaster
-  // (kept async, one level up, alongside Stage 2's raster parsing).
+  // Response body is a zip bundle (strandlines.gpkg + contour.geojson +
+  // run_parameters.json, plus tilted_dem.tif and preview_tilted.tif when the
+  // DEM is included) -- see documentation/api-README.md. Unzip client-side with
+  // fflate; the downloadable files become the results screen's download list
+  // (utils/downloads.js), contour parses straight to GeoJSON, and
+  // preview_tilted.tif (when present) is handed back as raw bytes for the
+  // caller to parse with georaster (kept async, one level up, alongside
+  // Stage 2's raster parsing).
   const arrayBuffer = await res.arrayBuffer()
   const files = unzipSync(new Uint8Array(arrayBuffer))
 
-  const blob = new Blob([files['strandlines.gpkg']], { type: 'application/geopackage+sqlite3' })
+  const downloads = buildDownloads(files)
   const contour = files['contour.geojson']
     ? JSON.parse(new TextDecoder().decode(files['contour.geojson']))
     : null
@@ -170,5 +173,5 @@ export async function runProcess(payload) {
     ? files['preview_tilted.tif'].slice().buffer
     : null
 
-  return { blob, contour, tiltedRasterBytes, reprojectedFrom, warnings, elevationSource, elevationNote, selectionSummary }
+  return { downloads, contour, tiltedRasterBytes, reprojectedFrom, warnings, elevationSource, elevationNote, selectionSummary }
 }

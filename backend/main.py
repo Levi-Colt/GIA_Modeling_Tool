@@ -477,6 +477,78 @@ def write_dem_to_gpkg_windowed(source_raster_path, gpkg_path, table_name="modifi
     return gpkg_path
 
 
+DEM_NODATA = -9999.0
+"""NoData value written into the tilted-DEM GeoTIFF. NaN cells are written as
+this sentinel and declared in the file's nodata tag, which ArcGIS and QGIS
+both honour (a bare NaN without a declared nodata value is not reliably
+treated as NoData by every reader)."""
+
+_GEOTIFF_BLOCK = 256
+
+
+def _geotiff_profile(width, height, crs, transform, workers):
+    return {
+        "driver": "GTiff", "width": width, "height": height, "count": 1,
+        "dtype": "float32", "crs": crs, "transform": transform, "nodata": DEM_NODATA,
+        # Tiled + DEFLATE without a predictor: readable by ArcGIS and QGIS alike
+        # (floating-point predictor 3 is not universally supported). BIGTIFF
+        # only when the file could exceed 4 GB.
+        "tiled": True, "blockxsize": _GEOTIFF_BLOCK, "blockysize": _GEOTIFF_BLOCK,
+        "compress": "deflate", "BIGTIFF": "IF_SAFER",
+        "NUM_THREADS": str(max(int(workers or 1), 1)),
+    }
+
+
+def _float32_with_nodata(block):
+    out = np.asarray(block, dtype="float32")
+    nan = np.isnan(out)
+    if nan.any():
+        out = np.where(nan, np.float32(DEM_NODATA), out)
+    return out
+
+
+def write_dem_to_geotiff(dem_array, transform, crs, tif_path, workers=1, strip_bytes=64 * 1024 ** 2):
+    """
+    Writes the (tilted) DEM as a standalone float32 GeoTIFF: tiled, DEFLATE,
+    NaN written as DEM_NODATA and declared as the file's nodata value. This is
+    the format for users (opens in ArcGIS and QGIS), unlike the GPKG raster
+    table, which uses the GeoPackage gridded-coverage extension.
+
+    Written in row-strips (multiples of the 256-row tile height, about
+    strip_bytes each) so the float32/nodata conversion never needs a full
+    copy of the array. workers sets GDAL's compression threads.
+    """
+    height, width = dem_array.shape
+    rows = max(int(strip_bytes // max(width * 4, 1)) // _GEOTIFF_BLOCK, 1) * _GEOTIFF_BLOCK
+    with rasterio.open(tif_path, "w", **_geotiff_profile(width, height, crs, transform, workers)) as dst:
+        for row_off in range(0, height, rows):
+            row_end = min(row_off + rows, height)
+            window = Window(0, row_off, width, row_end - row_off)
+            dst.write(_float32_with_nodata(dem_array[row_off:row_end]), 1, window=window)
+    return tif_path
+
+
+def write_dem_to_geotiff_windowed(source_raster_path, tif_path, tile_size=512, workers=1):
+    """
+    write_dem_to_geotiff for the windowed pipeline: copies an on-disk raster
+    (NaN or its own nodata value for missing cells) tile by tile, never
+    holding more than one tile_size x tile_size block.
+    """
+    with rasterio.open(source_raster_path) as src:
+        src_nodata = src.nodata
+        profile = _geotiff_profile(src.width, src.height, src.crs, src.transform, workers)
+        with rasterio.open(tif_path, "w", **profile) as dst:
+            for row_off in range(0, src.height, tile_size):
+                for col_off in range(0, src.width, tile_size):
+                    window = Window(col_off, row_off, min(tile_size, src.width - col_off),
+                                    min(tile_size, src.height - row_off))
+                    block = src.read(1, window=window).astype("float32")
+                    if src_nodata is not None and not np.isnan(src_nodata):
+                        block = np.where(block == src_nodata, np.nan, block)
+                    dst.write(_float32_with_nodata(block), 1, window=window)
+    return tif_path
+
+
 RECALIBRATION_THRESHOLD_KM = 100.0
 """
 Below this corner-to-corner raster diagonal, a single flat-plane calibration
@@ -713,7 +785,9 @@ def calculate_tilt(DEM_array, transform, origin_coords, tilt_azimuth, tilt_facto
 
     height = DEM_array.shape[0]
     workers = max(int(workers or 1), 1)
-    if workers > 1 and height >= 2 * workers:
+    # Only models that declare themselves safe for concurrent evaluation are
+    # threaded (backend/uplift.py's interface notes); anything else runs here.
+    if workers > 1 and height >= 2 * workers and getattr(uplift_model, "thread_safe", False):
         # Match the dtype the single-threaded path would return: the one-pass
         # path returns `block - U` as computed (float64, U being float64),
         # the chunked path fills a float32 array.
@@ -744,6 +818,11 @@ def _calculate_tilt_threaded(DEM_array, transform, origin_coords, uplift_model, 
     rows = max(min(math.ceil(height / workers), chunk_rows // workers), 1)
     starts = range(0, height, rows)
     out = np.empty(DEM_array.shape, dtype=out_dtype)
+    # Threads read the input through a read-only view (an accidental in-place
+    # write raises instead of racing) and each writes only its own rows of
+    # `out`, so no two threads ever touch the same memory.
+    DEM_array = DEM_array.view()
+    DEM_array.flags.writeable = False
     local = threading.local()
 
     def run(row_start):

@@ -196,6 +196,15 @@ class SurfaceUpliftModel:
     hinge_d: float | None = None
     hinge_source: str | None = None
 
+    # evaluate only reads the coefficients and mask (frozen read-only below).
+    thread_safe = True
+
+    def __post_init__(self):
+        # Guard for threaded evaluation: the fit can't be changed in place.
+        for array in (self.coeffs, self.mask):
+            if isinstance(array, np.ndarray):
+                array.flags.writeable = False
+
     @property
     def masks_outside(self):
         return self.mask is not None

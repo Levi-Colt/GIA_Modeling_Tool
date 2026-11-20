@@ -65,18 +65,41 @@ def test_zip_contains_gpkg_and_contour_when_include_dem_false(sloped_dem_path, t
     assert len(gdf) == len(contour["features"])
 
 
-def test_zip_includes_preview_tilted_tif_when_include_dem_true(sloped_dem_path):
+def test_zip_includes_tilted_dem_and_preview_when_include_dem_true(sloped_dem_path):
     response = _run(sloped_dem_path, include_dem=True)
 
     with zipfile.ZipFile(io.BytesIO(response.body)) as zf:
         names = set(zf.namelist())
-        assert names == {"strandlines.gpkg", "contour.geojson", "preview_tilted.tif", "run_parameters.json"}
+        assert names == {"strandlines.gpkg", "contour.geojson", "tilted_dem.tif", "preview_tilted.tif",
+                         "run_parameters.json"}
         preview_bytes = zf.read("preview_tilted.tif")
+        dem_bytes = zf.read("tilted_dem.tif")
 
     with rasterio.MemoryFile(preview_bytes) as mem:
         with mem.open() as src:
             assert src.crs == rasterio.crs.CRS.from_epsg(4326)
             assert src.count == 1
+
+    # The user-facing DEM: a full-resolution float32 GeoTIFF with a declared
+    # nodata value (what ArcGIS and QGIS both read).
+    with rasterio.open(sloped_dem_path) as src:
+        source_shape = (src.height, src.width)
+    with rasterio.MemoryFile(dem_bytes) as mem:
+        with mem.open() as src:
+            assert src.driver == "GTiff"
+            assert src.dtypes == ("float32",)
+            assert src.nodata == -9999.0
+            assert (src.height, src.width) == source_shape
+            assert src.crs == rasterio.crs.CRS.from_epsg(4326)
+
+
+def test_gpkg_holds_only_the_contour_layer_when_include_dem_true(sloped_dem_path, tmp_path):
+    # The DEM moved out of the .gpkg into tilted_dem.tif: the GPKG raster
+    # (gridded-coverage extension) isn't reliably readable in ArcGIS Pro.
+    response = _run(sloped_dem_path, include_dem=True)
+    with zipfile.ZipFile(io.BytesIO(response.body)) as zf:
+        extracted = zf.extract("strandlines.gpkg", tmp_path)
+    assert list(gpd.list_layers(extracted)["name"]) == ["strandline_contour"]
 
 
 def test_headers_unaffected_by_zip_bundling(flat_dem_path):

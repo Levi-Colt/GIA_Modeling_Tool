@@ -72,6 +72,13 @@ class GridUpliftModel:
     hinge_d: float | None = None
     hinge_source: str | None = None
 
+    # evaluate only reads `values` (frozen read-only below) and the profile.
+    thread_safe = True
+
+    def __post_init__(self):
+        # Guard for threaded evaluation: the grid can't be changed in place.
+        self.values.flags.writeable = False
+
     @property
     def extra_bytes_per_pixel(self):
         # Two float64 coordinate arrays + the sampled output = 24 B, plus the

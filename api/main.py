@@ -66,6 +66,7 @@ from api.crs import (  # noqa: E402
     InvalidOriginError,
 )
 from api.storage import create_job_workspace, cleanup_job_workspace, job_workspace  # noqa: E402
+from api.concurrency import run_exclusive  # noqa: E402
 from api.raster_preview import build_preview_geotiff_bytes  # noqa: E402
 from api.tilt_model import (  # noqa: E402
     TiltModelError, parse_tilt_model, validate_tilt_model, require_direction_inputs,
@@ -328,9 +329,13 @@ async def process(
 
     # --- Reproject the raster to EPSG:4326 if it isn't already, so it's
     # guaranteed to agree with the origin point resolved above ---
+    # Heavy, multi-threaded steps (reprojection, model builds, the run itself)
+    # go through run_exclusive (api/concurrency.py): one at a time across the
+    # whole server, off the event loop, each with its own warning capture.
     reprojected_path = os.path.join(job_dir, "input_wgs84.tif")
     try:
-        prep = ensure_wgs84_raster(input_path, reprojected_path, num_threads=WORKERS)
+        prep, _ = await run_exclusive(ensure_wgs84_raster, input_path, reprojected_path,
+                                      num_threads=WORKERS)
     except InvalidCRSError as e:
         raise HTTPException(status_code=422, detail=str(e))
     working_path = prep.path
@@ -356,12 +361,10 @@ async def process(
         try:
             with rasterio.open(working_path) as src:
                 transform, shape = src.transform, (src.height, src.width)
-            with warnings.catch_warnings(record=True) as built:
-                warnings.simplefilter("always")
-                uplift_model, diagnostics = await run_in_threadpool(
-                    build_vector_model_from_spec, parsed_tilt_model, tilt_factor,
-                    (origin_lon, origin_lat), transform, shape,
-                )
+            (uplift_model, diagnostics), built = await run_exclusive(
+                build_vector_model_from_spec, parsed_tilt_model, tilt_factor,
+                (origin_lon, origin_lat), transform, shape,
+            )
             build_warnings = _user_warning_messages(built)
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
@@ -373,36 +376,39 @@ async def process(
         try:
             with rasterio.open(working_path) as src:
                 transform, shape = src.transform, (src.height, src.width)
-            with warnings.catch_warnings(record=True) as built:
-                warnings.simplefilter("always")
-                uplift_model, surface_diagnostics = await run_in_threadpool(
-                    build_surface_model_from_spec, parsed_tilt_model,
-                    (origin_lon, origin_lat), transform, shape,
-                )
+            (uplift_model, surface_diagnostics), built = await run_exclusive(
+                build_surface_model_from_spec, parsed_tilt_model,
+                (origin_lon, origin_lat), transform, shape,
+            )
             build_warnings = _user_warning_messages(built)
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
 
     output_path = os.path.join(job_dir, "output.gpkg")
+    # The tilted DEM ships as a standalone GeoTIFF, not as a raster layer inside
+    # the .gpkg: GDAL stores a float32 GPKG raster with the GeoPackage
+    # gridded-coverage extension, which QGIS reads but ArcGIS Pro may not, while
+    # a tiled float32 GeoTIFF with a declared nodata value opens in both.
+    dem_tif_path = os.path.join(job_dir, "tilted_dem.tif")
 
-    # --- Run the (blocking, CPU-bound) backend pipeline off the event loop ---
+    # --- Run the (blocking, CPU-bound) backend pipeline off the event loop,
+    # exclusively (see run_exclusive), capturing its warnings ---
     try:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            await run_in_threadpool(
-                process_dem,
-                file_path=working_path,
-                origin_coords=(origin_lon, origin_lat),
-                # Ignored by the math whenever a model is given (vectors mode may omit them).
-                tilt_azimuth=0.0 if tilt_azimuth is None else tilt_azimuth,
-                tilt_factor=0.0 if tilt_factor is None else tilt_factor,
-                target_elevation=effective_target_elevation,
-                output_gpkg_path=output_path,
-                include_dem=include_dem,
-                selection_radius_km=selection_radius_km,
-                uplift_model=uplift_model,
-                workers=WORKERS,
-            )
+        _, caught = await run_exclusive(
+            process_dem,
+            file_path=working_path,
+            origin_coords=(origin_lon, origin_lat),
+            # Ignored by the math whenever a model is given (vectors mode may omit them).
+            tilt_azimuth=0.0 if tilt_azimuth is None else tilt_azimuth,
+            tilt_factor=0.0 if tilt_factor is None else tilt_factor,
+            target_elevation=effective_target_elevation,
+            output_gpkg_path=output_path,
+            include_dem=include_dem,
+            selection_radius_km=selection_radius_km,
+            uplift_model=uplift_model,
+            workers=WORKERS,
+            dem_tif_path=dem_tif_path,
+        )
         backend_warnings = build_warnings + _user_warning_messages(caught)
     except FileNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -454,71 +460,79 @@ async def process(
     else:
         headers["X-Target-Elevation-Source"] = "manual"
 
-    # --- Bundle strandlines.gpkg alongside two small, cheap-to-derive
-    # preview artifacts for the map's result-preview panel (see
-    # documentation/VISUALIZATION_PIPELINE_SPEC.md Stage 3). Both are read back from the
-    # .gpkg process_dem() just finished writing -- a small vector-layer read
-    # and a decimated raster-table read, not a re-run of tilt/contour
-    # computation -- rather than threading extra return values through
-    # process_dem() itself, which stays untouched (see CLAUDE.md). ---
-    contour_gdf = gpd.read_file(output_path, layer="strandline_contour")
+    # --- Bundle strandlines.gpkg (contour layer) and tilted_dem.tif alongside
+    # two small, cheap-to-derive preview artifacts for the map's result-preview
+    # panel (see documentation/VISUALIZATION_PIPELINE_SPEC.md Stage 3). Both are
+    # read back from the files process_dem() just finished writing -- a small
+    # vector-layer read and a decimated raster read, not a re-run of
+    # tilt/contour computation -- rather than threading extra return values
+    # through process_dem() itself. ---
+    def _bundle():
+        contour_gdf = gpd.read_file(output_path, layer="strandline_contour")
+        zip_buffer = io.BytesIO()
+        # ZIP_STORED (no compression), not ZIP_DEFLATED: measured on a real 440MB
+        # output, deflate spent ~19s to recover only a 5% size reduction --
+        # elevation rasters and WKB geometry don't compress well. See
+        # documentation/PERFORMANCE_OPTIMIZATION_SPEC.md Fix 3.
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_STORED) as zf:
+            zf.write(output_path, arcname="strandlines.gpkg")
+            zf.writestr("contour.geojson", contour_gdf.to_json())
+            zf.writestr("run_parameters.json", json.dumps({
+                "schema_version": RUN_PARAMETERS_SCHEMA_VERSION,
+                "app_commit": _git_commit(),
+                "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+                "input_file": _input_file_name(filename),
+                "origin": {"lon": origin_lon, "lat": origin_lat},
+                "effective_target_elevation": effective_target_elevation,
+                "target_elevation_source": "dem" if sampled_elevation is not None else "manual",
+                "submitted_target_elevation": target_elevation,
+                "tilt_azimuth": tilt_azimuth,
+                "tilt_factor": tilt_factor,
+                "tilt_model": parsed_tilt_model,
+                # Where uplift stops changing behind the spillway (km, negative) and
+                # what set it: 'mode' (the hinge mode) or 'guard' (the gradient
+                # reached zero first). Null for a basic run, or an unclamped profile.
+                "hinge_km": None if uplift_model is None else uplift_model.hinge_d,
+                "hinge_source": None if uplift_model is None else uplift_model.hinge_source,
+                # Vectors mode only: fit quality of the direction field (per-vector
+                # misfit, degrees; null for a vector outside the working grid).
+                # Vectors mode: per-vector misfit. Points mode: the full fit statistics
+                # and coefficients (the points themselves are in shore_points.csv).
+                "diagnostics": (
+                    _public_diagnostics(diagnostics) if diagnostics is not None
+                    else None if surface_diagnostics is None
+                    else _public_surface_diagnostics(surface_diagnostics)
+                ),
+                "include_dem": include_dem,
+                "selection_radius_km": selection_radius_km,
+                "reprojected": {
+                    "was_reprojected": bool(prep.was_reprojected),
+                    "from_crs": prep.original_crs if prep.was_reprojected else None,
+                },
+            }, indent=2))
+            if surface_diagnostics is not None:
+                zf.writestr("shore_points.csv", _shore_points_csv(
+                    parsed_tilt_model["direction"], surface_diagnostics["fit"]["residuals_m"]))
+            if include_dem:
+                zf.write(dem_tif_path, arcname="tilted_dem.tif")
+                preview_bytes = build_preview_geotiff_bytes(dem_tif_path)
+                zf.writestr("preview_tilted.tif", preview_bytes)
+        return zip_buffer.getvalue(), len(contour_gdf)
+
+    # Reading the outputs back and zipping them (a full-resolution DEM can be
+    # hundreds of MB) is blocking I/O, so it runs off the event loop. It only
+    # touches this job's own files, so it needs no lock.
+    zip_bytes, contour_count = await run_in_threadpool(_bundle)
     if selection_radius_km is not None:
         headers["X-Selection-Summary"] = (
-            f"{len(contour_gdf)} strandline contour(s) kept within "
+            f"{contour_count} strandline contour(s) kept within "
             f"{selection_radius_km:g} km of the origin."
         )
-    zip_buffer = io.BytesIO()
-    # ZIP_STORED (no compression), not ZIP_DEFLATED: measured on a real 440MB
-    # output, deflate spent ~19s to recover only a 5% size reduction --
-    # elevation rasters and WKB geometry don't compress well. See
-    # documentation/PERFORMANCE_OPTIMIZATION_SPEC.md Fix 3.
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_STORED) as zf:
-        zf.write(output_path, arcname="strandlines.gpkg")
-        zf.writestr("contour.geojson", contour_gdf.to_json())
-        zf.writestr("run_parameters.json", json.dumps({
-            "schema_version": RUN_PARAMETERS_SCHEMA_VERSION,
-            "app_commit": _git_commit(),
-            "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-            "input_file": _input_file_name(filename),
-            "origin": {"lon": origin_lon, "lat": origin_lat},
-            "effective_target_elevation": effective_target_elevation,
-            "target_elevation_source": "dem" if sampled_elevation is not None else "manual",
-            "submitted_target_elevation": target_elevation,
-            "tilt_azimuth": tilt_azimuth,
-            "tilt_factor": tilt_factor,
-            "tilt_model": parsed_tilt_model,
-            # Where uplift stops changing behind the spillway (km, negative) and
-            # what set it: 'mode' (the hinge mode) or 'guard' (the gradient
-            # reached zero first). Null for a basic run, or an unclamped profile.
-            "hinge_km": None if uplift_model is None else uplift_model.hinge_d,
-            "hinge_source": None if uplift_model is None else uplift_model.hinge_source,
-            # Vectors mode only: fit quality of the direction field (per-vector
-            # misfit, degrees; null for a vector outside the working grid).
-            # Vectors mode: per-vector misfit. Points mode: the full fit statistics
-            # and coefficients (the points themselves are in shore_points.csv).
-            "diagnostics": (
-                _public_diagnostics(diagnostics) if diagnostics is not None
-                else None if surface_diagnostics is None
-                else _public_surface_diagnostics(surface_diagnostics)
-            ),
-            "include_dem": include_dem,
-            "selection_radius_km": selection_radius_km,
-            "reprojected": {
-                "was_reprojected": bool(prep.was_reprojected),
-                "from_crs": prep.original_crs if prep.was_reprojected else None,
-            },
-        }, indent=2))
-        if surface_diagnostics is not None:
-            zf.writestr("shore_points.csv", _shore_points_csv(
-                parsed_tilt_model["direction"], surface_diagnostics["fit"]["residuals_m"]))
-        if include_dem:
-            preview_bytes = build_preview_geotiff_bytes(f"GPKG:{output_path}:modified_dem")
-            zf.writestr("preview_tilted.tif", preview_bytes)
 
     headers["Content-Disposition"] = 'attachment; filename="results.zip"'
 
     return Response(
-        content=zip_buffer.getvalue(),
+        content=zip_bytes,
         media_type="application/zip",
         headers=headers,
         background=background_tasks,
@@ -648,7 +662,8 @@ async def raster_preview(
         input_path = file_path
 
     try:
-        preview_bytes = build_preview_geotiff_bytes(input_path)
+        # Reads the whole DEM (decimated): heavy for a large one, so exclusive.
+        preview_bytes, _ = await run_exclusive(build_preview_geotiff_bytes, input_path)
     except InvalidCRSError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except FileNotFoundError as e:
@@ -741,7 +756,8 @@ async def origin_elevation(
         # than avoiding the reprojection cost here. ---
         try:
             reprojected_path = os.path.join(job_dir, "input_wgs84.tif")
-            prep = ensure_wgs84_raster(input_path, reprojected_path, num_threads=WORKERS)
+            prep, _ = await run_exclusive(ensure_wgs84_raster, input_path, reprojected_path,
+                                          num_threads=WORKERS)
         except (InvalidCRSError, InvalidOriginError) as e:
             raise HTTPException(status_code=422, detail=str(e))
         except FileNotFoundError as e:
@@ -789,6 +805,19 @@ class ProfilePreviewRequest(BaseModel):
 NOMINAL_D_RANGE_KM = (-100.0, 100.0)
 
 
+def _build_profile_preview(parsed, tilt_azimuth, tilt_factor, origin, bounds):
+    # Run through run_exclusive, which captures the warnings (e.g. warn_for_range's).
+    model = build_uplift_model(parsed, tilt_azimuth, tilt_factor)
+    if origin is not None and bounds is not None:
+        d_min, d_max = uplift_d_range_km(model, tuple(origin), bounds)
+        nominal = False
+    else:
+        d_min, d_max = NOMINAL_D_RANGE_KM
+        nominal = True
+    model.warn_for_range(d_min, d_max)
+    return model, d_min, d_max, nominal
+
+
 @app.post("/api/profile-preview")
 async def profile_preview(body: ProfilePreviewRequest):
     # --- Pure math, no raster I/O: the uplift-vs-distance curve the run would
@@ -808,16 +837,10 @@ async def profile_preview(body: ProfilePreviewRequest):
                 f"/api/profile-preview is for direction.type 'azimuth'; use {use} "
                 f"for '{parsed['direction']['type']}'."
             )
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            model = build_uplift_model(parsed, body.tilt_azimuth, body.tilt_factor)
-            if body.origin is not None and body.bounds_wgs84 is not None:
-                d_min, d_max = uplift_d_range_km(model, tuple(body.origin), body.bounds_wgs84)
-                nominal = False
-            else:
-                d_min, d_max = NOMINAL_D_RANGE_KM
-                nominal = True
-            model.warn_for_range(d_min, d_max)
+        (model, d_min, d_max, nominal), caught = await run_exclusive(
+            _build_profile_preview, parsed, body.tilt_azimuth, body.tilt_factor,
+            body.origin, body.bounds_wgs84,
+        )
         messages = _user_warning_messages(caught)
         if nominal:
             messages.append(
@@ -861,14 +884,13 @@ PREVIEW_RASTER_SHAPE = (512, 512)
 
 
 def _build_uplift_preview(parsed, tilt_factor, origin, bounds):
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        transform = rasterio.transform.from_bounds(*bounds, PREVIEW_RASTER_SHAPE[1], PREVIEW_RASTER_SHAPE[0])
-        model, diagnostics = build_vector_model_from_spec(
-            parsed, tilt_factor, tuple(origin), transform, PREVIEW_RASTER_SHAPE,
-        )
+    # Run through run_exclusive, which captures the build's warnings.
+    transform = rasterio.transform.from_bounds(*bounds, PREVIEW_RASTER_SHAPE[1], PREVIEW_RASTER_SHAPE[0])
+    model, diagnostics = build_vector_model_from_spec(
+        parsed, tilt_factor, tuple(origin), transform, PREVIEW_RASTER_SHAPE,
+    )
     isobases, interval = isobases_geojson(model, diagnostics)
-    return diagnostics, isobases, interval, _user_warning_messages(caught)
+    return diagnostics, isobases, interval
 
 
 @app.post("/api/uplift-preview")
@@ -886,9 +908,10 @@ async def uplift_preview(body: UpliftPreviewRequest):
                 "/api/uplift-preview is for direction.type 'vectors'; use /api/profile-preview "
                 "for a single azimuth, or /api/fit-uplift-surface for shore points."
             )
-        diagnostics, isobases, interval, messages = await run_in_threadpool(
+        (diagnostics, isobases, interval), caught = await run_exclusive(
             _build_uplift_preview, parsed, body.tilt_factor, body.origin, body.bounds_wgs84,
         )
+        messages = _user_warning_messages(caught)
     except (TiltModelError, ValueError) as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -918,14 +941,13 @@ class FitSurfaceRequest(BaseModel):
 
 
 def _build_surface_preview(parsed, origin, bounds):
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        transform = rasterio.transform.from_bounds(*bounds, PREVIEW_RASTER_SHAPE[1], PREVIEW_RASTER_SHAPE[0])
-        model, diagnostics = build_surface_model_from_spec(
-            parsed, tuple(origin), transform, PREVIEW_RASTER_SHAPE,
-        )
+    # Run through run_exclusive, which captures the build's warnings.
+    transform = rasterio.transform.from_bounds(*bounds, PREVIEW_RASTER_SHAPE[1], PREVIEW_RASTER_SHAPE[0])
+    model, diagnostics = build_surface_model_from_spec(
+        parsed, tuple(origin), transform, PREVIEW_RASTER_SHAPE,
+    )
     isobases, interval, hull = surface_isobases_geojson(model, diagnostics)
-    return diagnostics, isobases, interval, hull, _user_warning_messages(caught)
+    return diagnostics, isobases, interval, hull
 
 
 @app.post("/api/fit-uplift-surface")
@@ -945,9 +967,10 @@ async def fit_uplift_surface(body: FitSurfaceRequest):
                 "hinge": body.hinge, "extrapolation": body.extrapolation,
             },
         }, None)
-        diagnostics, isobases, interval, hull, messages = await run_in_threadpool(
+        (diagnostics, isobases, interval, hull), caught = await run_exclusive(
             _build_surface_preview, parsed, body.origin, body.bounds_wgs84,
         )
+        messages = _user_warning_messages(caught)
     except (TiltModelError, ValueError) as e:
         raise HTTPException(status_code=422, detail=str(e))
 

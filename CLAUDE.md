@@ -96,7 +96,8 @@
   `calculate_tilt`'s one-pass path returns float64 (`block - U`) while its chunked path
   returns float32, and the threaded path must return whichever the single-threaded call
   would — `process_dem`'s in-memory run is normally the float64 one-pass case. (4) With
-  `workers > 1`, the in-memory branch runs `write_dem_to_gpkg` on a second thread while
+  `workers > 1`, the in-memory branch runs the DEM write (GeoTIFF via `dem_tif_path`, or
+  `write_dem_to_gpkg`) on a second thread while
   tracing contours (GDAL releases the GIL; skimage holds it), when `_overlap_fits` says
   both operations' memory (`CONTOUR_` + `GPKG_WRITE_BYTES_PER_PIXEL`) fits 60% of RAM
   free at that moment; the `with` block waits for the write even if tracing raises, so
@@ -108,8 +109,9 @@
   uncompressed GeoTIFF) and no setting fixes it: SQLite pragmas (`OGR_SQLITE_SYNCHRONOUS`,
   `_JOURNAL`, `_CACHE`), `GDAL_CACHEMAX`, `GDAL_NUM_THREADS` and window alignment gave
   ≤10%; `BLOCKSIZE=1024` gave ~15% but changes the file's tiling and pads small DEMs
-  (a 1024² tile per edge), so it was not adopted. Shipping the DEM as a separate GeoTIFF
-  in the zip would remove the cost but changes the bundle contract — ask first.
+  (a 1024² tile per edge), so it was not adopted. The app now ships the DEM as a
+  GeoTIFF instead (see the `/api/process` bundle entry), which removes this cost from
+  web-app runs; it remains for direct `process_dem` calls without `dem_tif_path`.
   `find_contours` holds the GIL (threads give 1.0×; processes would change line
   segmentation). Tests: `tests/test_parallel_processing.py`.
 - **Routing is relative everywhere** — no leading-slash paths anywhere in
@@ -530,14 +532,39 @@
   ("intersects") mode is exposed via the API/UI; the backend's `"clip"` mode
   is a held-back fallback. `X-Selection-Summary` reports the kept count.
 - `/api/process`'s response is a zip bundle (`.gpkg` + `contour.geojson` +
-  optional `preview_tilted.tif` + always `run_parameters.json`), not a bare
-  `.gpkg` — see
-  `documentation/api-README.md`. The two preview artifacts are read back
-  from the just-written `.gpkg` (`gpd.read_file` for the vector layer,
-  `rasterio` against the GPKG raster table for the DEM) rather than
-  threaded out of `backend/app.py::process_dem`'s internals — deliberately,
-  to keep `process_dem`'s return value unchanged, at the cost of one cheap extra read of already-computed,
-  already-small output (not a second pipeline run).
+  always `run_parameters.json`, plus `tilted_dem.tif` and `preview_tilted.tif`
+  when `include_dem`), not a bare `.gpkg` — see `documentation/api-README.md`.
+  **Deliverables must open in both ArcGIS Pro and QGIS** (decided 2026-11-20): the
+  `.gpkg` holds only the contour layer, and the tilted DEM ships as `tilted_dem.tif`
+  (`process_dem(dem_tif_path=...)` → `write_dem_to_geotiff[_windowed]`: tiled, DEFLATE
+  *without* a predictor, float32, NaN → `DEM_NODATA` = -9999 declared as nodata). The
+  old `modified_dem` GPKG raster used the gridded-coverage extension, which ArcGIS Pro
+  may not read and which declared no nodata; it is still the default when
+  `process_dem` is called without `dem_tif_path` (tests, direct backend use). The
+  previews are read back from the just-written files (`gpd.read_file` for the
+  vector layer, the GeoTIFF for the DEM), inside a threadpool function
+  (`_bundle`) so a large DEM doesn't block the event loop. The results screen
+  (`utils/downloads.js`) offers the contour, the DEM and every file but
+  `preview_tilted.tif` (map-only) as `gia_results.zip`, built in the browser
+  with fflate, stored (level 0), lazily on click.
+- **Concurrency safeguards** (`api/concurrency.py`). `run_exclusive(fn, ...)` runs
+  `fn` in a worker thread that holds one process-wide `threading.Lock` and captures
+  that call's warnings (`→ (result, warnings)`); it's used for every heavy or
+  warning-capturing step: reprojection (process and origin-elevation), the
+  raster preview, model builds, `process_dem`, and the profile/uplift/surface
+  previews. Why: each heavy step sizes itself to RAM free *now* and uses every
+  CPU, so two at once could exceed the pod's memory; and
+  `warnings.catch_warnings` is module-global, so overlapping captures lose or mix
+  warnings between requests. The lock is taken and released in the worker
+  thread (never on the event loop, so the server stays responsive, and a client
+  disconnect can't strand it). **Never call `warnings.catch_warnings` directly in
+  an API route** — go through `run_exclusive`. Cost: a preview requested during a
+  run waits for it. Backend guards: models opt in to threaded evaluation with
+  `thread_safe = True` (all three current ones; `calculate_tilt` runs anything
+  else single-threaded) and freeze their arrays read-only; threads read the DEM
+  through a read-only view; the tilted array is read-only while the DEM writer
+  and contour tracing share it. `tests/test_concurrency_safeguards.py` (its
+  two-runs test fails with the lock removed — checked).
 - Target elevation is DEM-authoritative: when the origin falls inside the
   DEM on valid data, the DEM's own elevation there overrides any submitted
   `target_elevation` (the tilt plane pivots through the origin, so the two

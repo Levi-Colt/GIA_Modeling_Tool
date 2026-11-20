@@ -14,7 +14,7 @@ function triggerDownload(blob, filename) {
 }
 
 export default function ResultsSuccess({ result, formState, onRunAgain, onAdjustInputs }) {
-  const { blob, filename, reprojectedFrom, warnings, elevationNote, selectionSummary } = result
+  const { downloads = [], reprojectedFrom, warnings, elevationNote, selectionSummary } = result
 
   return (
     <div className="space-y-4 py-2">
@@ -35,18 +35,33 @@ export default function ResultsSuccess({ result, formState, onRunAgain, onAdjust
       {selectionSummary && <Banner variant="info">{selectionSummary}</Banner>}
       {warnings && <Banner variant="warning">{warnings}</Banner>}
 
-      <div className="rounded-md border border-gray-200 p-4">
-        <p className="text-sm font-medium text-gray-900">{filename}</p>
-        <p className="text-xs text-gray-500">
-          Strandline contour GeoPackage
-          {formState.includeDem ? ' (includes the tilted DEM as a raster layer)' : ''}
+      <div className="rounded-md border border-gray-200">
+        <ul className="divide-y divide-gray-200">
+          {downloads.map((d) => (
+            <li key={d.key} className="flex items-center justify-between gap-3 p-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-gray-900">{d.label}</p>
+                <p className="truncate text-xs text-gray-500" title={d.description}>
+                  {d.filename} &middot; {d.description}
+                </p>
+              </div>
+              <button
+                onClick={() => triggerDownload(d.getBlob(), d.filename)}
+                className={
+                  d.key === 'all'
+                    ? 'shrink-0 rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white'
+                    : 'shrink-0 rounded-md border border-gray-300 px-4 py-2 text-sm'
+                }
+                aria-label={`Download ${d.label}`}
+              >
+                Download
+              </button>
+            </li>
+          ))}
+        </ul>
+        <p className="border-t border-gray-200 px-3 py-2 text-xs text-gray-500">
+          The GeoPackage and GeoTIFF open in ArcGIS Pro and QGIS.
         </p>
-        <button
-          onClick={() => triggerDownload(blob, filename)}
-          className="mt-3 rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white"
-        >
-          Download
-        </button>
       </div>
 
       <p className="text-xs text-gray-500">

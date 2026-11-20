@@ -18,17 +18,24 @@ The response body is a zip archive (`Content-Type: application/zip`), not a
 bare `.gpkg` file:
 
 ```
-strandlines.gpkg    -- unchanged: the same GeoPackage this endpoint always
-                       produced (strandline contour vector layer, plus the
-                       tilted DEM raster layer when include_dem is true)
+strandlines.gpkg    -- the strandline contour vector layer
+                       (`strandline_contour`) only. Before 2026-11-20 it also
+                       held the tilted DEM as a `modified_dem` raster table
+                       (GeoPackage gridded-coverage extension, which ArcGIS Pro
+                       may not read); that moved to tilted_dem.tif.
+tilted_dem.tif      -- present only when include_dem is true: the full-
+                       resolution tilted DEM as a tiled, DEFLATE-compressed
+                       float32 GeoTIFF, NaN written as -9999 and declared as
+                       nodata (backend/main.py write_dem_to_geotiff). Readable
+                       by ArcGIS Pro and QGIS.
 contour.geojson     -- the strandline_contour layer, read back from the
                        .gpkg and dumped to GeoJSON (already EPSG:4326,
                        since the working raster process_dem tilts is
                        always reprojected to WGS84 first -- see
                        api/crs.py)
 preview_tilted.tif  -- present only when include_dem is true. A small,
-                       decimated GeoTIFF read back from the .gpkg's
-                       raster table (see api/raster_preview.py), for the
+                       decimated GeoTIFF read back from tilted_dem.tif
+                       (see api/raster_preview.py), for the
                        frontend's map panel -- not a second run of the
                        tilt/contour pipeline, just a cheap read of
                        already-computed output.
@@ -40,11 +47,12 @@ shore_points.csv    -- present only for a `points` run (spec 6): the points that
                        its headers are ones the frontend importer matches.
 ```
 
-`contour.geojson`/`preview_tilted.tif` exist purely to feed the frontend
-map panel's result-preview state (see `VISUALIZATION_PIPELINE_SPEC.md`);
-the `.gpkg` inside the zip is byte-identical to what this endpoint returned
-before this bundling was added, so the existing download flow is
-unaffected. All the response headers described below (`X-Source-CRS-...`,
+`preview_tilted.tif` exists purely to feed the frontend map panel's
+result-preview state (see `VISUALIZATION_PIPELINE_SPEC.md`), so the
+frontend leaves it out of the user's downloads; `contour.geojson` feeds the
+map and is also downloadable. The results screen offers `strandlines.gpkg`,
+`tilted_dem.tif` and every other file (as `gia_results.zip`) for download
+(`frontend/src/utils/downloads.js`). All the response headers described below (`X-Source-CRS-...`,
 `X-Processing-Warnings`, `X-Target-Elevation-...`) are unchanged and attach
 to this same zip response.
 
@@ -192,7 +200,7 @@ Interactive docs (request/response schema, try-it-out) are served at `/docs`.
 | `tilt_azimuth` | float | yes, unless `tilt_model.direction.type` is `"vectors"` or `"points"` | tilt direction, degrees |
 | `tilt_factor` | float | yes, unless `direction.type` is `"points"`, or `"vectors"` with every vector custom | meters of elevation change per km, at the spillway -- see "Relaxed fields" below |
 | `target_elevation` | float | yes | paleo-elevation to contour, meters -- may be overridden server-side, see "Target elevation resolution" below |
-| `include_dem` | bool | no (default `true`) | also embed the tilted DEM as a raster layer |
+| `include_dem` | bool | no (default `true`) | also return the tilted DEM, as `tilted_dem.tif` in the bundle |
 | `selection_radius_km` | float | no | keep only strandline contours that come within this many km of the resolved origin -- see "Selection radius" below |
 | `tilt_model` | string (JSON) | no | uplift model: profile family + hinge rule -- see "Tilt model" below. Absent means the basic linear tilt (byte-identical to a run before this field existed), which requires `tilt_azimuth` and `tilt_factor`; `tilt_factor` is always the global profile's gradient at the origin (c1) |
 

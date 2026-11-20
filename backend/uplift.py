@@ -14,6 +14,11 @@ Uplift-model interface (duck typed):
     extra_bytes_per_pixel: int   -- added to the tilt memory estimate
     evaluate(east_km, north_km)  -- broadcastable arrays -> U in meters, float64
 Optional:
+    thread_safe: bool            -- True when `evaluate` may run on several
+        threads at once (it reads only immutable build-time state and keeps no
+        caches). calculate_tilt threads a model's evaluation only when this is
+        True; a model without it runs single-threaded. Set it only after
+        checking that `evaluate` never writes to the model.
     signed_distance_km(east_km, north_km) -- planar models only; the signed
         distance along the azimuth used by `evaluate` (before clamping).
     warn_for_range(d_min_km, d_max_km)    -- emit UserWarnings that depend on
@@ -122,6 +127,8 @@ class PlanarUpliftModel:
     profile: PolynomialProfile
     hinge_d: float | None  # resolved once at build time; None = unclamped
     hinge_source: str | None = None  # 'mode' | 'guard' | None (see resolve_hinge)
+
+    thread_safe = True  # evaluate is pure (see the interface notes above)
 
     @property
     def extra_bytes_per_pixel(self):

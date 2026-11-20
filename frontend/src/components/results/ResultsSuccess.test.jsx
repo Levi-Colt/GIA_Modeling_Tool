@@ -3,8 +3,15 @@ import { render, screen } from '@testing-library/react'
 
 import ResultsSuccess from './ResultsSuccess.jsx'
 import { DEFAULT_HINGE, DEFAULT_PROFILE } from '../../utils/tiltModel.js'
+import { buildDownloads } from '../../utils/downloads.js'
 
-const result = { blob: new Blob(['x']), filename: 'strandlines.gpkg' }
+const result = {
+  downloads: buildDownloads({
+    'strandlines.gpkg': new Uint8Array([1]),
+    'tilted_dem.tif': new Uint8Array([2]),
+    'run_parameters.json': new Uint8Array([3])
+  })
+}
 const baseForm = {
   mode: 'basic',
   tiltAzimuth: '28',
@@ -21,6 +28,17 @@ const baseForm = {
 
 const renderResults = (formState) =>
   render(<ResultsSuccess result={result} formState={formState} onRunAgain={() => {}} onAdjustInputs={() => {}} />)
+
+describe('ResultsSuccess downloads', () => {
+  it('offers the contour, the tilted DEM and all files, each with its own button', () => {
+    renderResults(baseForm)
+    for (const label of ['Strandline contour', 'Tilted DEM', 'All files']) {
+      expect(screen.getByRole('button', { name: `Download ${label}` })).toBeInTheDocument()
+    }
+    expect(screen.getByText(/tilted_dem\.tif · GeoTIFF/)).toBeInTheDocument()
+    expect(screen.getByText(/open in ArcGIS Pro and QGIS/)).toBeInTheDocument()
+  })
+})
 
 describe('ResultsSuccess parameter line', () => {
   it('adds the family and hinge in Advanced mode, naming the guard when it set the clamp', () => {

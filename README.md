@@ -212,20 +212,23 @@ cells top to bottom; the default CPU runtime is enough.
 2. Work down the four sections: **DEM**, **Origin** (the spillway), **Tilt** and **Output**. Each field shows its state: gray is optional, blue is required and empty, green is valid, red is invalid. The **Run** button enables once every required field is valid.
 3. Use the **Basic / Advanced** switch above Run to move between a single-page form and collapsible sections with the extra uplift options. Switching never clears what you entered.
 4. Press **Run**. A large DEM can take a while; the progress indicator is indeterminate while it works.
-5. On the results screen, inspect the contour on the map and read the warnings, then download the zip.
+5. On the results screen, inspect the contour on the map and read the warnings, then download the contour, the tilted DEM, or all files as one zip.
 
 Very large DEMs are handled automatically: the tool checks available memory and processes the raster in tiles when it won't fit.
 
 ### What you get back
-The download is a zip bundle:
+The results screen offers the contour and the tilted DEM on their own, and every
+file together as `gia_results.zip`:
 
 | File | Contents |
 |---|---|
-| `strandlines.gpkg` | The strandline contour layer, plus the corrected DEM as a raster layer if you included it. |
+| `strandlines.gpkg` | The strandline contour as a GeoPackage line layer. Opens in ArcGIS Pro and QGIS. |
+| `tilted_dem.tif` | The corrected (tilted) DEM at full resolution: float32 GeoTIFF, NoData = -9999 (only when you included the DEM). Opens in ArcGIS Pro and QGIS. |
 | `contour.geojson` | The same contour as GeoJSON (EPSG:4326). |
-| `preview_tilted.tif` | A small decimated preview of the corrected DEM (only when the DEM was included). |
 | `run_parameters.json` | Everything the run used, plus fit diagnostics, so the run can be reproduced. |
 | `shore_points.csv` | The shore points used (only for shore-point runs); it can be re-imported. |
+
+All products are in WGS84 (EPSG:4326).
 
 The full request/response contract is in [api-README.md](documentation/api-README.md).
 
@@ -233,7 +236,7 @@ The full request/response contract is in [api-README.md](documentation/api-READM
 A few behaviors are intentional trade-offs or documented gaps rather than bugs, and are worth knowing about:
 
 - **`write_dem_to_gpkg` overwrites an existing file at the same path by default** (`overwrite=True`); pass `overwrite=False` to restore the strict raise-if-exists behavior (e.g. to add a raster layer to an existing multi-layer `.gpkg` without touching its other layers). `write_dem_to_gpkg_windowed` shares the same `overwrite` parameter and default.
-- **No `nodata` value is declared on GeoPackage raster output** — NaN values round-trip correctly as bit patterns, but downstream tools that rely on an explicit nodata tag (rather than recognizing NaN by convention) will treat those cells as literal data.
+- **No `nodata` value is declared on GeoPackage raster output** (`write_dem_to_gpkg`, used when calling `process_dem` directly without `dem_tif_path`) — NaN values round-trip correctly as bit patterns, but downstream tools that rely on an explicit nodata tag will treat those cells as literal data. The web app doesn't produce this: it delivers the DEM as `tilted_dem.tif`, with NoData declared.
 - **Multi-tile DEM mosaicking is not yet supported.** Input DEMs are expected as a single GeoTIFF; if a study area spans multiple source tiles (e.g., multiple 1°x1° USGS tiles), the user is currently responsible for mosaicking them beforehand.
 - **DEM inputs are automatically reprojected to WGS84.** Regardless of the CRS of the input DEM, once uploaded, the input DEM is reprojected to WGS84. This is done to enforce CRS uniformity and simplify the map visualization, tilt calculation, and contouring workflows. This also means any products the user downloads will also be in WGS84.
 

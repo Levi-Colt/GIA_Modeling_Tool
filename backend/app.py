@@ -1,3 +1,4 @@
+import functools
 import os
 import tempfile
 import warnings
@@ -21,6 +22,8 @@ from backend.main import (
     select_contours_within_radius,
     write_dem_to_gpkg,
     write_dem_to_gpkg_windowed,
+    write_dem_to_geotiff,
+    write_dem_to_geotiff_windowed,
 )
 
 # Fix 2 (documentation/PERFORMANCE_OPTIMIZATION_SPEC.md) -- per-pixel memory
@@ -95,7 +98,7 @@ def _as_line_list(geometry):
 def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
                  target_elevation, output_gpkg_path, include_dem=True,
                  selection_radius_km=None, selection_mode="intersects", uplift_model=None,
-                 workers=1):
+                 workers=1, dem_tif_path=None):
     """
     uplift_model: optional backend/uplift.py model (see UPLIFT_MODEL_SPEC.md).
     When given it takes precedence and tilt_azimuth/tilt_factor are ignored by
@@ -104,9 +107,15 @@ def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
 
     workers: threads for the tilt arithmetic (see calculate_tilt); the output
     is bit-identical for any value. With workers > 1, the in-memory branch also
-    writes the DEM layer while tracing contours when both fit in RAM
-    (_overlap_fits); the windowed branch stays sequential to keep its budget. GDAL's own threading (reads, reprojection)
-    is configured by the caller, e.g. via GDAL_NUM_THREADS; see api/main.py.
+    writes the DEM while tracing contours when both fit in RAM (_overlap_fits);
+    the windowed branch stays sequential to keep its budget. GDAL's own
+    threading (reads, reprojection) is configured by the caller, e.g. via
+    GDAL_NUM_THREADS; see api/main.py.
+
+    dem_tif_path: when given (and include_dem), the tilted DEM is written there
+    as a standalone GeoTIFF (write_dem_to_geotiff) instead of as a raster layer
+    inside output_gpkg_path, which then holds only the contour layer. None
+    (the default) keeps the GPKG raster layer.
     """
     print("--- Starting GIA Processing ---")
 
@@ -125,6 +134,8 @@ def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
         os.makedirs(output_dir, exist_ok=True)
     if os.path.exists(output_gpkg_path):
         os.remove(output_gpkg_path)
+    if dem_tif_path is not None and os.path.exists(dem_tif_path):
+        os.remove(dem_tif_path)
 
     #Check system constraints dynamically
     free_ram = check_available_ram_mb()
@@ -169,7 +180,10 @@ def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
             contours = extract_strandline_contours_windowed(
                 tilted_path, target_elevation, tile_size=contour_tile_size,
             )
-            if include_dem:
+            if include_dem and dem_tif_path is not None:
+                write_dem_to_geotiff_windowed(tilted_path, dem_tif_path, tile_size=gpkg_tile_size,
+                                              workers=workers)
+            elif include_dem:
                 write_dem_to_gpkg_windowed(tilted_path, output_gpkg_path, tile_size=gpkg_tile_size)
             lines = _as_line_list(contours)
         finally:
@@ -184,21 +198,36 @@ def process_dem(file_path, origin_coords, tilt_azimuth, tilt_factor,
             dem_array, transform, origin_coords, tilt_azimuth, tilt_factor, chunk_rows=chunk_rows,
             uplift_model=uplift_model, workers=workers,
         )
+        if dem_tif_path is not None:
+            write_dem = functools.partial(write_dem_to_geotiff, tilted_array, transform, crs,
+                                          dem_tif_path, workers=workers)
+        else:
+            write_dem = functools.partial(write_dem_to_gpkg, tilted_array, transform, crs,
+                                          output_gpkg_path)
         if include_dem and workers > 1 and _overlap_fits(width, height):
-            # Write the DEM layer on a second thread while tracing contours:
-            # GDAL releases the GIL for the GPKG write (slow per pixel, ~3 s per
-            # 36 Mpx), while skimage's contour tracing holds it, so the two
-            # overlap. Same writes in the same order, so the output is identical.
-            # Leaving the `with` waits for the write even if tracing raises, so
-            # the vector layer below never touches a file still being written.
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                dem_write = pool.submit(write_dem_to_gpkg, tilted_array, transform, crs, output_gpkg_path)
-                contours = extract_strandline_contours(tilted_array, transform, target_elevation)
-                dem_write.result()
+            # Write the DEM on a second thread while tracing contours: GDAL
+            # releases the GIL for the write (the GPKG raster write in
+            # particular is slow per pixel, ~3 s per 36 Mpx), while skimage's
+            # contour tracing holds it, so the two overlap. Same writes in the
+            # same order, so the output is identical. The writer only reads
+            # tilted_array, which nothing modifies from here on, and owns its
+            # own GDAL dataset handle. Leaving the `with` waits for the write
+            # even if tracing raises, so the vector layer below never touches a
+            # file still being written.
+            # Read-only while both threads use it: an accidental in-place write
+            # anywhere raises instead of racing with the writer.
+            tilted_array.flags.writeable = False
+            try:
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    dem_write = pool.submit(write_dem)
+                    contours = extract_strandline_contours(tilted_array, transform, target_elevation)
+                    dem_write.result()
+            finally:
+                tilted_array.flags.writeable = True
         else:
             contours = extract_strandline_contours(tilted_array, transform, target_elevation)
             if include_dem:
-                write_dem_to_gpkg(tilted_array, transform, crs, output_gpkg_path)
+                write_dem()
         lines = [LineString(c) for c in contours]
 
     # Drop nodata-boundary/noise artifacts, then simplify the legitimate

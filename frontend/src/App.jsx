@@ -195,13 +195,13 @@ function ProcessingPage() {
     if (!isReadyToRun(formState)) return
     setRunState({ status: 'running', startedAt: Date.now(), result: null, error: null })
     try {
-      const { blob, contour, tiltedRasterBytes, reprojectedFrom, warnings, elevationSource, elevationNote, selectionSummary } =
+      const { downloads, contour, tiltedRasterBytes, reprojectedFrom, warnings, elevationSource, elevationNote, selectionSummary } =
         await runProcess(buildProcessPayload(formState))
       const resultMapData = await deriveMapDataFromResult({ contour, tiltedRasterBytes })
       setRunState({
         status: 'success',
         startedAt: null,
-        result: { blob, filename: 'strandlines.gpkg', reprojectedFrom, warnings, elevationSource, elevationNote, selectionSummary },
+        result: { downloads, reprojectedFrom, warnings, elevationSource, elevationNote, selectionSummary },
         resultMapData,
         error: null
       })

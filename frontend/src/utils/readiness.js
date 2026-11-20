@@ -23,6 +23,8 @@ export function getReadiness(formState) {
 
   if (formState.preflightStatus !== 'valid') need('dem', 'a valid DEM')
   if (!formState.originValue) need('origin', 'origin coordinates')
+  else if (formState.resolveOriginStatus === 'checking') need('origin', 'origin lookup in progress')
+  else if (formState.resolveOriginStatus === 'error') need('origin', 'origin coordinates that can be read')
   if (usingVectors(formState)) {
     // Vectors mode (Advanced only): no single azimuth; the directions come from
     // the vectors, the magnitude from the profile's gradient at the spillway.
@@ -45,9 +47,13 @@ export function getReadiness(formState) {
   // Without this, a stale targetElevation left over from an earlier,
   // already-edited-away coordinate would otherwise still pass the
   // non-empty check above.
+  // Without a valid DEM the check can't run yet; it runs by itself once the
+  // DEM's preflight succeeds (useRecheckOriginOnDem), and the DEM's own field
+  // already says what's missing, so only list it while a DEM is ready. 'error'
+  // (the preview request failed) lets a hand-entered target elevation stand.
   if (formState.elevationCheckStatus === 'checking') {
     need('origin', 'origin elevation check in progress')
-  } else if (formState.elevationCheckStatus === 'idle') {
+  } else if (formState.elevationCheckStatus === 'idle' && formState.preflightStatus === 'valid') {
     need('origin', 'origin elevation check (click out of the coordinate field)')
   }
   const radius = formState.selectionRadiusKm

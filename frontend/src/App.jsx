@@ -12,7 +12,7 @@ import ResultsError from './components/results/ResultsError.jsx'
 import { runProcess } from './api/client.js'
 import { useProfilePreview } from './hooks/useProfilePreview.js'
 import { useUpliftPreview } from './hooks/useUpliftPreview.js'
-import { useOriginChecks } from './hooks/useOriginChecks.js'
+import { useOriginChecks, useRecheckOriginOnDem } from './hooks/useOriginChecks.js'
 import { formatDecimalDegrees, roundedLonLat } from './utils/origin.js'
 import { surfaceFitKey, useSurfaceFit } from './hooks/useSurfaceFit.js'
 import { azimuthLine as computeAzimuthLine } from './utils/geometry.js'
@@ -78,6 +78,9 @@ const IDLE_RUN_STATE = { status: 'idle', startedAt: null, result: null, resultMa
 function ProcessingPage() {
   const { formState, updateForm, setVectors, selectVector, setMapEditMode, requestVectorFocus } = useProcessing()
   const { checkElevation } = useOriginChecks()
+  // An origin entered before the DEM's preflight finished gets its elevation
+  // checked once the DEM is ready (and again for a replacement DEM).
+  useRecheckOriginOnDem()
   // Transient — deliberately not persisted to localStorage like formState,
   // so kept as local state here rather than in ProcessingContext.
   const [runState, setRunState] = useState(IDLE_RUN_STATE)

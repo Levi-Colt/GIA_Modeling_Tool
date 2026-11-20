@@ -28,6 +28,11 @@ export function CoordinatesStep() {
   } else if (resolveOriginStatus === 'error') {
     status = 'invalid'
     message = resolveOriginMessage || 'Could not read that coordinate.'
+  } else {
+    // Typed but not looked up yet (the lookup runs on blur): still needed, so
+    // blue, never green -- Run waits on this lookup and the DEM-elevation check.
+    status = 'required'
+    message = 'Click out of the field to look up this coordinate.'
   }
 
   return (

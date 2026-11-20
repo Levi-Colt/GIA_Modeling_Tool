@@ -22,7 +22,7 @@ vi.mock('./api/client.js', () => ({
 }))
 
 import App from './App.jsx'
-import { originElevation, resolvePoint } from './api/client.js'
+import { originElevation, rasterPreview, resolvePoint, runPreflight } from './api/client.js'
 
 const STORAGE_KEY = 'gia-tool:last-run'
 const origin = () => screen.getByPlaceholderText('latitude, longitude')
@@ -163,5 +163,84 @@ describe('required-field outlines replace the footer list', () => {
     await user.tab()
     expect(await screen.findByText('245 m — from DEM at origin')).toBeInTheDocument()
     expect(screen.getByLabelText('Target elevation (m)')).toBeDisabled()
+  })
+})
+
+// The order fields are filled in mustn't matter: an origin committed while the
+// DEM's preflight is still in flight gets its elevation checked once the DEM is
+// ready, and Run is never disabled behind an all-green form.
+describe('origin entered before the DEM preflight resolves', () => {
+  const runButton = () => screen.getByRole('button', { name: 'Run model' })
+  const targetInput = () => screen.getByPlaceholderText('Target elev. (m)')
+
+  async function enterOriginBeforePreflight() {
+    let finishPreflight
+    runPreflight.mockReturnValue(new Promise((res) => (finishPreflight = res)))
+    rasterPreview.mockRejectedValue(new Error('no preview in tests'))
+    resolvePoint.mockResolvedValue({ lon: -104.85, lat: 44.85 })
+    render(<App />)
+    const user = userEvent.setup()
+    await user.type(screen.getByPlaceholderText('/path/to/dem.tif'), '/data/dem.tif')
+    await user.tab()
+    await user.type(origin(), '44.85N, 104.85W')
+    await user.tab()
+    expect(await screen.findByText('Origin located.')).toBeInTheDocument()
+    // No DEM yet: nothing to check the elevation against.
+    expect(originElevation).not.toHaveBeenCalled()
+    await user.type(screen.getByLabelText('Azimuth (deg)'), '30')
+    await user.type(screen.getByLabelText('Tilt (m/km)'), '0.5')
+    return { user, finishPreflight }
+  }
+
+  it('checks the elevation once preflight succeeds and fills the target from the DEM', async () => {
+    originElevation.mockResolvedValue({ within_bounds: true, elevation: 1234.5, reason: null })
+    const { finishPreflight } = await enterOriginBeforePreflight()
+    expect(runButton()).toBeDisabled()
+
+    await act(async () => finishPreflight({ crs: 'EPSG:4326', bounds_wgs84: [-105, 44, -104, 45] }))
+    await waitFor(() => expect(originElevation).toHaveBeenCalledWith(null, '/data/dem.tif', '44.85N, 104.85W'))
+    expect(await screen.findByText(/1234.5 m — from DEM at origin/)).toBeInTheDocument()
+    await waitFor(() => expect(runButton()).toBeEnabled())
+  })
+
+  it('outside the DEM, a typed target elevation is enough to run', async () => {
+    originElevation.mockResolvedValue({ within_bounds: false, elevation: null, reason: 'outside_bounds' })
+    const { user, finishPreflight } = await enterOriginBeforePreflight()
+    await act(async () => finishPreflight({ crs: 'EPSG:4326', bounds_wgs84: [-105, 44, -104, 45] }))
+    expect(await screen.findByText(/Origin falls outside the DEM/)).toBeInTheDocument()
+    await user.type(targetInput(), '1500')
+    expect(targetInput().className).toMatch(/border-green-500/)
+    expect(runButton()).toBeEnabled()
+  })
+
+  it('a failed elevation preview leaves a hand-entered target usable, with a message', async () => {
+    originElevation.mockRejectedValue(new Error('boom'))
+    const { user, finishPreflight } = await enterOriginBeforePreflight()
+    await act(async () => finishPreflight({ crs: 'EPSG:4326', bounds_wgs84: [-105, 44, -104, 45] }))
+    expect(await screen.findByText(/Could not read the DEM elevation at the origin/)).toBeInTheDocument()
+    await user.type(targetInput(), '1500')
+    expect(runButton()).toBeEnabled()
+  })
+
+  it('an origin typed but not yet looked up is blue and says what to do', async () => {
+    render(<App />)
+    const user = userEvent.setup()
+    await user.type(origin(), '44.85N, 104.85W')
+    expect(origin().className).toMatch(/border-blue-400/)
+    expect(screen.getByText('Click out of the field to look up this coordinate.')).toBeInTheDocument()
+  })
+
+  it('a stale elevation answer for an edited origin is dropped', async () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ preflightStatus: 'valid', demPath: '/x.tif' }))
+    let finish
+    originElevation.mockReturnValue(new Promise((res) => (finish = res)))
+    resolvePoint.mockResolvedValue({ lon: -104.85, lat: 44.85 })
+    render(<App />)
+    const user = userEvent.setup()
+    await user.type(origin(), '44.85N, 104.85W')
+    await user.tab()
+    await user.type(origin(), '1') // edits the origin while the check is in flight
+    await act(async () => finish({ within_bounds: true, elevation: 999, reason: null }))
+    expect(screen.queryByText(/999 m — from DEM at origin/)).not.toBeInTheDocument()
   })
 })

@@ -36,8 +36,7 @@ describe('getReadiness', () => {
       'origin coordinates',
       'tilt azimuth',
       'tilt factor',
-      'target elevation',
-      'origin elevation check (click out of the coordinate field)'
+      'target elevation'
     ])
   })
 
@@ -60,9 +59,23 @@ describe('getReadiness', () => {
     expect(check({ ...completeForm, elevationCheckStatus: 'checking' }).missingText).toEqual([
       'origin elevation check in progress'
     ])
-    for (const status of ['dem', 'outside_bounds', 'nodata']) {
+    for (const status of ['dem', 'outside_bounds', 'nodata', 'error']) {
       expect(check({ ...completeForm, elevationCheckStatus: status }).ready).toBe(true)
     }
+  })
+
+  it('lists the elevation check only once a DEM is ready (it runs by itself then)', () => {
+    const noDem = check({ ...completeForm, preflightStatus: 'checking', elevationCheckStatus: 'idle' })
+    expect(noDem.missingText).toEqual(['a valid DEM'])
+  })
+
+  it('gates on the origin lookup being in flight or failed', () => {
+    expect(check({ ...completeForm, resolveOriginStatus: 'checking' }).missingText).toEqual([
+      'origin lookup in progress'
+    ])
+    expect(check({ ...completeForm, resolveOriginStatus: 'error' }).missingText).toEqual([
+      'origin coordinates that can be read'
+    ])
   })
 
   it('keys every reason to its form section', () => {
@@ -81,7 +94,6 @@ describe('getReadiness', () => {
       { section: 'tilt', text: 'tilt azimuth' },
       { section: 'tilt', text: 'tilt factor' },
       { section: 'origin', text: 'target elevation' },
-      { section: 'origin', text: 'origin elevation check (click out of the coordinate field)' },
       { section: 'output', text: 'a positive selection radius (or leave it empty)' }
     ])
   })

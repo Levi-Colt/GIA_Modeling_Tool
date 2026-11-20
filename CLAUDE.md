@@ -520,7 +520,15 @@
   `checking` shows a spinner next to the field's message. The origin field shows its
   own lookup state (`resolveOriginStatus`, plus the transient `resolveOriginMessage`
   carrying the API's reason); `useOriginChecks` is the one place the two origin
-  round-trips live, shared by the typed field's blur and the map pick. The footer
+  round-trips live, shared by the typed field's blur and the map pick;
+  `useRecheckOriginOnDem` (called in `ProcessingPage`) re-runs them whenever a DEM
+  passes preflight, so an origin committed before the DEM was ready still gets its
+  elevation check (fill order doesn't matter), and elevation answers for an
+  origin/DEM that changed meanwhile are dropped. A failed elevation preview is
+  `elevationCheckStatus: 'error'` (a typed target stands); readiness lists the
+  elevation check only while a DEM is valid, and gates on the origin lookup being
+  in flight or failed. A typed-but-unlooked-up origin is blue with "Click out of the
+  field to look up this coordinate." The footer
   under Run no longer lists what is missing (just "Complete the highlighted fields to
   run."); `getReadiness` still computes it, and Advanced's section headers still show
   "Needs: ...". Empty/loading/error placeholders are plain (not dashed) boxes — the

@@ -205,8 +205,13 @@ export function ProcessingProvider({ children }) {
     })
   }
 
+  // patch: an object to merge, or (prev) => object | null, computed from the
+  // latest state (null leaves the state as it is -- e.g. a stale async answer).
   function updateForm(patch) {
-    commit((prev) => ({ ...prev, ...patch }))
+    commit((prev) => {
+      const p = typeof patch === 'function' ? patch(prev) : patch
+      return p ? { ...prev, ...p } : prev
+    })
   }
 
   // Shallow-merges into formState.advanced (callers replacing a nested object,

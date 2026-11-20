@@ -32,6 +32,14 @@ export function TargetElevationField() {
     if (elevationCheckStatus === 'nodata') {
       message = 'No elevation data at the origin cell — enter a target elevation manually.'
     }
+    if (elevationCheckStatus === 'error') {
+      message = 'Could not read the DEM elevation at the origin — enter a target elevation manually.'
+    }
+    if (elevationCheckStatus === 'idle' && formState.preflightStatus === 'valid' && formState.originValue.trim()) {
+      // Run waits on the DEM-elevation check here, so a typed value isn't "done" yet.
+      status = 'required'
+      message = 'Waiting for the origin to be checked against the DEM.'
+    }
     input = (
       <input
         type="number"
